@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Modal, Alert } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Modal, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import DateTimePicker from '@react-native-community/datetimepicker';
+import * as Clipboard from 'expo-clipboard';
+import { api } from '../api/client';
+import CalendarPicker from '../components/CalendarPicker';
 
 const MOCK_FACILITIES = [
   { id: 'f1', name: 'Mulago National Referral Hospital', type: 'Hospital', district: 'Kampala', score: 3.8 },
@@ -28,12 +30,12 @@ export default function FeedbackScreen({ navigation }) {
   const [selectedFacility, setSelectedFacility] = useState(null);
   const [recentFacilities, setRecentFacilities] = useState([]);
   const [visitDate, setVisitDate] = useState(new Date());
-  const [showDatePicker, setShowDatePicker] = useState(false);
   const [answers, setAnswers] = useState({});
   const [comment, setComment] = useState('');
   const [anonymous, setAnonymous] = useState(true);
   const [submitted, setSubmitted] = useState(false);
   const [ticketNumber, setTicketNumber] = useState(null);
+  const [loading, setLoading] = useState(false);
   const [infoModal, setInfoModal] = useState({ visible: false, title: '', desc: '' });
 
   useEffect(() => {
@@ -54,7 +56,7 @@ export default function FeedbackScreen({ navigation }) {
       if (draft) {
         const data = JSON.parse(draft);
         if (Date.now() - data.savedAt < 86400000) {
-          if (data.facilityId) setSelectedFacility(data.facilityId);
+          if (data.facility) setSelectedFacility(data.facility);
           if (data.visitDate) setVisitDate(new Date(data.visitDate));
           if (data.answers) setAnswers(data.answers);
           if (data.comment) setComment(data.comment);
@@ -68,7 +70,7 @@ export default function FeedbackScreen({ navigation }) {
   const saveDraft = async () => {
     try {
       await AsyncStorage.setItem('feedbackDraft', JSON.stringify({
-        facilityId: selectedFacility,
+        facility: selectedFacility,
         visitDate: visitDate.toISOString(),
         answers,
         comment,
@@ -79,44 +81,26 @@ export default function FeedbackScreen({ navigation }) {
     } catch {}
   };
 
-  const searchFacilities = (query) => {
+  const searchFacilities = async (query) => {
     setFacilityQuery(query);
     if (query.length >= 2) {
-      const results = MOCK_FACILITIES.filter(f => 
-        f.name.toLowerCase().includes(query.toLowerCase()) ||
-        f.district.toLowerCase().includes(query.toLowerCase())
-      );
-      setFacilityResults(results);
+      try {
+        const res = await api.get('/facilities/', { params: { search: query } });
+        setFacilityResults(res.data.results || res.data);
+      } catch {
+        setFacilityResults([]);
+      }
     } else {
       setFacilityResults([]);
     }
   };
 
   const selectFacility = async (facility) => {
-    setSelectedFacility(facility.id);
-    // Save to recent
+    setSelectedFacility(facility);
     const recent = [facility, ...recentFacilities.filter(f => f.id !== facility.id)].slice(0, 3);
     setRecentFacilities(recent);
     await AsyncStorage.setItem('recentFacilities', JSON.stringify(recent));
     saveDraft();
-  };
-
-  const handleDateChange = (event, date) => {
-    setShowDatePicker(false);
-    if (date) {
-      const today = new Date();
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(today.getDate() - 30);
-      
-      if (date > today) {
-        Alert.alert('Invalid Date', 'Cannot be in the future');
-      } else if (date < thirtyDaysAgo) {
-        Alert.alert('Too Old', 'We only accept feedback for visits within the last 30 days');
-      } else {
-        setVisitDate(date);
-        saveDraft();
-      }
-    }
   };
 
   const selectAnswer = (questionId, value) => {
@@ -124,12 +108,27 @@ export default function FeedbackScreen({ navigation }) {
     saveDraft();
   };
 
+  const isQuickMatch = (label, date) => {
+    const today = new Date();
+    const d = new Date(date);
+    if (label === 'Today') return d.toDateString() === today.toDateString();
+    if (label === 'Yesterday') {
+      const y = new Date(); y.setDate(y.getDate() - 1);
+      return d.toDateString() === y.toDateString();
+    }
+    if (label === 'This Week') {
+      const w = new Date(); w.setDate(w.getDate() - 7);
+      return d.toDateString() === w.toDateString();
+    }
+    return false;
+  };
+
   const showInfo = (title, desc) => {
     setInfoModal({ visible: true, title, desc });
   };
 
   const canProceed = () => {
-    if (step === 1) return selectedFacility !== null;
+    if (step === 1) return selectedFacility !== null && selectedFacility !== undefined;
     if (step === 2) return visitDate !== null;
     if (step === 3) return Object.keys(answers).length >= 3;
     return true;
@@ -156,7 +155,7 @@ const submitFeedback = async () => {
   setLoading(true);
   try {
     const payload = {
-      facility: selectedFacility,
+      facility: selectedFacility?.id || selectedFacility,
       visit_date: visitDate.toISOString().split('T')[0],
       is_anonymous: anonymous,
       q1_introduced: answers.q1_introduced,
@@ -219,14 +218,14 @@ const submitFeedback = async () => {
           {recentFacilities.map(facility => (
             <TouchableOpacity
               key={facility.id}
-              style={[styles.facilityOption, selectedFacility === facility.id && styles.facilityOptionSelected]}
+              style={[styles.facilityOption, selectedFacility?.id === facility.id && styles.facilityOptionSelected]}
               onPress={() => selectFacility(facility)}
             >
               <View>
                 <Text style={styles.facilityName}>{facility.name}</Text>
-                <Text style={styles.facilitySub}>{facility.type}</Text>
+                <Text style={styles.facilitySub}>{facility.type || facility.facility_type}</Text>
               </View>
-              {selectedFacility === facility.id && (
+              {selectedFacility?.id === facility.id && (
                 <Ionicons name="checkmark-circle" size={24} color={colors.primary.teal} />
               )}
             </TouchableOpacity>
@@ -242,14 +241,14 @@ const submitFeedback = async () => {
           facilityResults.map(facility => (
             <TouchableOpacity
               key={facility.id}
-              style={[styles.facilityOption, selectedFacility === facility.id && styles.facilityOptionSelected]}
+              style={[styles.facilityOption, selectedFacility?.id === facility.id && styles.facilityOptionSelected]}
               onPress={() => selectFacility(facility)}
             >
               <View>
                 <Text style={styles.facilityName}>{facility.name}</Text>
-                <Text style={styles.facilitySub}>{facility.district} • {facility.type}</Text>
+                <Text style={styles.facilitySub}>{facility.district} • {facility.type || facility.facility_type}</Text>
               </View>
-              {selectedFacility === facility.id && (
+              {selectedFacility?.id === facility.id && (
                 <Ionicons name="checkmark-circle" size={24} color={colors.primary.teal} />
               )}
             </TouchableOpacity>
@@ -270,12 +269,12 @@ const submitFeedback = async () => {
   const renderStep2 = () => (
     <View>
       <Text style={styles.stepTitle}>When did you visit?</Text>
-      
+
       <View style={styles.quickDates}>
         {['Today', 'Yesterday', 'This Week'].map(label => (
           <TouchableOpacity
             key={label}
-            style={styles.quickDateBtn}
+            style={[styles.quickDateBtn, visitDate && isQuickMatch(label, visitDate) && styles.quickDateBtnActive]}
             onPress={() => {
               const d = new Date();
               if (label === 'Yesterday') d.setDate(d.getDate() - 1);
@@ -284,33 +283,21 @@ const submitFeedback = async () => {
               saveDraft();
             }}
           >
-            <Text style={styles.quickDateText}>{label}</Text>
+            <Text style={[styles.quickDateText, visitDate && isQuickMatch(label, visitDate) && styles.quickDateTextActive]}>
+              {label}
+            </Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      <TouchableOpacity 
-        style={styles.dateBox}
-        onPress={() => setShowDatePicker(true)}
-      >
-        <Text style={styles.dateText}>
-          {visitDate.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
-        </Text>
-        <Ionicons name="calendar" size={20} color={colors.primary.teal} />
-      </TouchableOpacity>
-      
-      {showDatePicker && (
-        <DateTimePicker
-          value={visitDate}
-          mode="date"
-          display="default"
-          maximumDate={new Date()}
-          minimumDate={new Date(Date.now() - 30 * 86400000)}
-          onChange={handleDateChange}
-        />
-      )}
+      <CalendarPicker
+        value={visitDate}
+        onChange={(date) => { setVisitDate(date); saveDraft(); }}
+        maxDate={new Date()}
+        minDate={new Date(Date.now() - 30 * 86400000)}
+      />
 
-      <Text style={styles.dateHint}>We only accept feedback for visits within the last 30 days.</Text>
+      <Text style={styles.dateHint}>Only visits within the last 30 days are accepted.</Text>
     </View>
   );
 
@@ -405,12 +392,15 @@ const submitFeedback = async () => {
         </View>
       </TouchableOpacity>
 
-      <TouchableOpacity 
-        style={[styles.submitBtn, !canProceed() && styles.submitBtnDisabled]}
+      <TouchableOpacity
+        style={[styles.submitBtn, (!canProceed() || loading) && styles.submitBtnDisabled]}
         onPress={submitFeedback}
-        disabled={!canProceed()}
+        disabled={!canProceed() || loading}
       >
-        <Text style={styles.submitText}>Submit Feedback</Text>
+        {loading
+          ? <ActivityIndicator color="#fff" />
+          : <Text style={styles.submitText}>Submit Feedback</Text>
+        }
       </TouchableOpacity>
     </View>
   );
@@ -660,22 +650,17 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 8,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  quickDateBtnActive: {
+    backgroundColor: colors.primary.light,
+    borderColor: colors.primary.teal,
   },
   quickDateText: { fontSize: 13, fontWeight: '500', color: colors.text },
+  quickDateTextActive: { color: colors.primary.teal, fontWeight: '700' },
   
-  dateBox: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: colors.gray[50],
-    padding: 14,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-  },
-  dateText: { fontSize: 16, color: colors.text },
-  dateHint: { fontSize: 12, color: colors.danger, marginTop: 8 },
+  dateHint: { fontSize: 12, color: colors.danger, marginTop: 10 },
   
   infoBox: {
     backgroundColor: colors.gray[50],

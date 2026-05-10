@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, FlatList, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert } from 'react-native';
+import { View, Text, TextInput, FlatList, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert, ActivityIndicator } from 'react-native';
 import { api } from '../api/client';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
@@ -68,7 +68,7 @@ const handleSearch = async (query) => {
   };
 
   const shareDoctor = async (doctor) => {
-    const text = `Dr. ${doctor.name} (${doctor.reg}) is ${doctor.status.replace('_', ' ').toUpperCase()} ✓ — Verified on Musawo app`;
+    const text = `Dr. ${doctor.full_name} (${doctor.registration_number}) is ${doctor.status.replace('_', ' ').toUpperCase()} ✓ — Verified on Musawo app`;
     try {
       await Clipboard.setStringAsync(text);
       alert('Copied to clipboard!');
@@ -82,8 +82,8 @@ const handleSearch = async (query) => {
       activeOpacity={0.7}
     >
       <View style={styles.doctorInfo}>
-        <Text style={styles.doctorName}>{item.name}</Text>
-        <Text style={styles.doctorSub}>{item.specialty} • {item.reg}</Text>
+        <Text style={styles.doctorName}>{item.full_name}</Text>
+        <Text style={styles.doctorSub}>{item.specialty?.name || 'General Practice'} • {item.registration_number}</Text>
       </View>
       <StatusBadge status={item.status} size="small" />
     </TouchableOpacity>
@@ -125,7 +125,9 @@ const handleSearch = async (query) => {
         </ScrollView>
       </View>
 
-      {results.length === 0 ? (
+      {loading ? (
+        <ActivityIndicator style={{ marginTop: 40 }} size="large" color={colors.primary.teal} />
+      ) : results.length === 0 ? (
         <View style={styles.emptyState}>
           <Text style={styles.emptyText}>
             {searchQuery ? 'No results found' : 'Type a name or reg number to verify'}
@@ -157,12 +159,12 @@ const handleSearch = async (query) => {
                 <View style={styles.modalHeader}>
                   <View style={styles.avatar}>
                     <Text style={styles.avatarText}>
-                      {selectedDoctor.name.split(' ').map(n => n[0]).join('').substring(0, 2)}
+                      {selectedDoctor.full_name.split(' ').map(n => n[0]).join('').substring(0, 2)}
                     </Text>
                   </View>
                   <View style={styles.modalHeaderInfo}>
-                    <Text style={styles.modalName}>{selectedDoctor.name}</Text>
-                    <Text style={styles.modalReg}>{selectedDoctor.reg} • {selectedDoctor.specialty}</Text>
+                    <Text style={styles.modalName}>{selectedDoctor.full_name}</Text>
+                    <Text style={styles.modalReg}>{selectedDoctor.registration_number} • {selectedDoctor.specialty?.name || 'General Practice'}</Text>
                   </View>
                 </View>
 
@@ -172,30 +174,30 @@ const handleSearch = async (query) => {
                     <StatusBadge status={selectedDoctor.status} size="large" />
                   </View>
                   
-                  {selectedDoctor.since && (
+                  {selectedDoctor.registration_date && (
                     <View style={styles.modalRow}>
                       <Text style={styles.modalLabel}>Licensed since</Text>
                       <Text style={styles.modalValue}>
-                        {new Date(selectedDoctor.since).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+                        {new Date(selectedDoctor.registration_date).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
                       </Text>
                     </View>
                   )}
-                  
-                  {selectedDoctor.lastVerified && (
+
+                  {selectedDoctor.last_verified_at && (
                     <View style={styles.modalRow}>
                       <Text style={styles.modalLabel}>Last verified</Text>
                       <Text style={styles.modalValue}>
-                        {new Date(selectedDoctor.lastVerified).toLocaleDateString()}
+                        {new Date(selectedDoctor.last_verified_at).toLocaleDateString()}
                       </Text>
                     </View>
                   )}
-                  
+
                   {selectedDoctor.status === 'SUSPENDED' && (
                     <View style={styles.alertBox}>
                       <Text style={styles.alertText}>
-                        Suspended: {selectedDoctor.suspensionReason}
+                        Suspended: {selectedDoctor.suspension_reason}
                       </Text>
-                      <Text style={styles.alertSub}>Date: {selectedDoctor.suspensionDate}</Text>
+                      <Text style={styles.alertSub}>Date: {selectedDoctor.suspension_date}</Text>
                     </View>
                   )}
                   

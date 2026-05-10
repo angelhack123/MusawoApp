@@ -1,54 +1,39 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
-import * as Clipboard from 'expo-clipboard';
-
-const trackTicket = async () => {
-  const ticket = ticketInput.trim().toUpperCase();
-  if (!ticket.match(/^MSW-\d{4}-\d{6}$/)) {
-    Alert.alert('Invalid Format', 'Use format: MSW-YYYY-NNNNNN');
-    return;
-  }
-
-  setLoading(true);
-  try {
-    const res = await api.get(`/feedback/?ticket_number=${ticket}`);
-    const data = res.data.results?.[0] || res.data;
-    if (data) {
-      setActiveComplaint(data);
-      setShowHistory(false);
-    } else {
-      Alert.alert('Not Found', 'Ticket not found. Check number and try again.');
-    }
-  } catch (err) {
-    Alert.alert('Error', 'Failed to track complaint.');
-  } finally {
-    setLoading(false);
-  }
-};
+import { api } from '../api/client';
 
 export default function TrackScreen() {
   const [ticketInput, setTicketInput] = useState('');
   const [activeComplaint, setActiveComplaint] = useState(null);
-  const [showHistory, setShowHistory] = useState(true);
+  const [loading, setLoading] = useState(false);
 
-  const trackTicket = () => {
+  const trackTicket = async () => {
     const ticket = ticketInput.trim().toUpperCase();
-    const complaint = MOCK_COMPLAINTS.find(c => c.ticket === ticket);
-    
-    if (!complaint) {
-      Alert.alert('Ticket Not Found', 'Please check the format (MSW-YYYY-NNNNNN) and try again.');
-      setActiveComplaint(null);
+    if (!ticket.match(/^MSW-\d{4}-\d{6}$/)) {
+      Alert.alert('Invalid Format', 'Use format: MSW-YYYY-NNNNNN');
       return;
     }
-    
-    setActiveComplaint(complaint);
-    setShowHistory(false);
+    setLoading(true);
+    try {
+      const res = await api.get(`/feedback/?ticket_number=${ticket}`);
+      const data = res.data.results?.[0] ?? (Array.isArray(res.data) ? res.data[0] : res.data);
+      if (data) {
+        setActiveComplaint(data);
+      } else {
+        Alert.alert('Not Found', 'Ticket not found. Check number and try again.');
+        setActiveComplaint(null);
+      }
+    } catch {
+      Alert.alert('Error', 'Failed to track complaint.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const getStatusStyle = (status) => {
-    switch(status) {
+    switch (status) {
       case 'RESOLVED': return { bg: '#DCFCE7', text: colors.success, border: '#86EFAC' };
       case 'UNDER_REVIEW': return { bg: '#DBEAFE', text: '#2563EB', border: '#93C5FD' };
       case 'ESCALATED': return { bg: '#FEF3C7', text: '#D97706', border: '#FCD34D' };
@@ -56,7 +41,7 @@ export default function TrackScreen() {
     }
   };
 
-  const getStatusLabel = (status) => status.replace('_', ' ');
+  const getStatusLabel = (status) => (status || '').replace(/_/g, ' ');
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -80,43 +65,58 @@ export default function TrackScreen() {
               autoCapitalize="characters"
             />
           </View>
-          <TouchableOpacity style={styles.trackBtn} onPress={trackTicket}>
-            <Text style={styles.trackBtnText}>Check Status</Text>
+          <TouchableOpacity style={styles.trackBtn} onPress={trackTicket} disabled={loading}>
+            {loading
+              ? <ActivityIndicator color="#fff" />
+              : <Text style={styles.trackBtnText}>Check Status</Text>
+            }
           </TouchableOpacity>
         </View>
 
-        {/* Active Complaint Timeline */}
+        {/* Complaint Result */}
         {activeComplaint && (
           <View style={styles.card}>
             <View style={styles.timelineHeader}>
-              <Text style={styles.ticketNum}>{activeComplaint.ticket}</Text>
-              <Text style={styles.facilityName}>{activeComplaint.facility}</Text>
-              <Text style={styles.submittedDate}>Submitted: {activeComplaint.date}</Text>
+              <Text style={styles.ticketNum}>{activeComplaint.ticket_number || ticketInput}</Text>
+              {activeComplaint.facility && (
+                <Text style={styles.facilityName}>
+                  {activeComplaint.facility?.name || activeComplaint.facility}
+                </Text>
+              )}
+              {activeComplaint.visit_date && (
+                <Text style={styles.submittedDate}>
+                  Visit date: {new Date(activeComplaint.visit_date).toLocaleDateString()}
+                </Text>
+              )}
             </View>
 
-            <View style={styles.timeline}>
-              {activeComplaint.timeline.map((step, index) => {
-                const isLast = index === activeComplaint.timeline.length - 1;
-                const statusStyle = getStatusStyle(step.status);
-                
+            <View style={styles.statusRow}>
+              <Text style={styles.statusLabel}>Status</Text>
+              {(() => {
+                const s = getStatusStyle(activeComplaint.status);
                 return (
-                  <View key={index} style={styles.timelineItem}>
-                    <View style={[styles.timelineDot, { backgroundColor: isLast ? colors.primary.teal : colors.gray[300] }]} />
-                    <View style={styles.timelineContent}>
-                      <Text style={styles.timelineStatus}>{getStatusLabel(step.status)}</Text>
-                      <Text style={styles.timelineDate}>{step.date}</Text>
-                      {isLast && activeComplaint.resolution && (
-                        <View style={styles.resolutionBox}>
-                          <Text style={styles.resolutionLabel}>Action Taken:</Text>
-                          <Text style={styles.resolutionText}>{activeComplaint.resolution}</Text>
-                          <Text style={styles.resolvedDate}>Resolved: {activeComplaint.dateResolved}</Text>
-                        </View>
-                      )}
-                    </View>
+                  <View style={[styles.statusBadge, { backgroundColor: s.bg, borderColor: s.border }]}>
+                    <Text style={[styles.statusBadgeText, { color: s.text }]}>
+                      {getStatusLabel(activeComplaint.status || 'SUBMITTED')}
+                    </Text>
                   </View>
                 );
-              })}
+              })()}
             </View>
+
+            {activeComplaint.comment && (
+              <View style={styles.commentBox}>
+                <Text style={styles.commentLabel}>Your feedback</Text>
+                <Text style={styles.commentText}>{activeComplaint.comment}</Text>
+              </View>
+            )}
+
+            {activeComplaint.resolution_summary && (
+              <View style={styles.resolutionBox}>
+                <Text style={styles.resolutionLabel}>Action Taken:</Text>
+                <Text style={styles.resolutionText}>{activeComplaint.resolution_summary}</Text>
+              </View>
+            )}
 
             {activeComplaint.status === 'RESOLVED' && (
               <View style={styles.rateSection}>
@@ -130,41 +130,6 @@ export default function TrackScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
-            )}
-          </View>
-        )}
-
-        {/* Complaint History */}
-        {showHistory && !activeComplaint && (
-          <View style={styles.historySection}>
-            <Text style={styles.sectionTitle}>Your History</Text>
-            {MOCK_COMPLAINTS.length === 0 ? (
-              <Text style={styles.emptyText}>You haven't submitted any trackable feedback yet.</Text>
-            ) : (
-              MOCK_COMPLAINTS.map(complaint => {
-                const statusStyle = getStatusStyle(complaint.status);
-                return (
-                  <TouchableOpacity
-                    key={complaint.ticket}
-                    style={styles.historyItem}
-                    onPress={() => {
-                      setTicketInput(complaint.ticket);
-                      setActiveComplaint(complaint);
-                      setShowHistory(false);
-                    }}
-                  >
-                    <View>
-                      <Text style={styles.historyFacility}>{complaint.facility}</Text>
-                      <Text style={styles.historyMeta}>{complaint.date} • {complaint.ticket}</Text>
-                    </View>
-                    <View style={[styles.historyStatus, { backgroundColor: statusStyle.bg, borderColor: statusStyle.border }]}>
-                      <Text style={[styles.historyStatusText, { color: statusStyle.text }]}>
-                        {getStatusLabel(complaint.status)}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })
             )}
           </View>
         )}
@@ -201,9 +166,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   headerTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
-  
+
   content: { padding: 16, paddingBottom: 100 },
-  
+
   card: {
     backgroundColor: colors.card,
     borderRadius: 12,
@@ -218,7 +183,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardTitle: { fontSize: 18, fontWeight: 'bold', color: colors.primary.dark, marginBottom: 12 },
-  
+
   inputBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -237,7 +202,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontFamily: 'monospace',
   },
-  
+
   trackBtn: {
     backgroundColor: colors.primary.teal,
     padding: 14,
@@ -245,8 +210,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   trackBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
-  
-  timelineHeader: { marginBottom: 20 },
+
+  timelineHeader: { marginBottom: 16 },
   ticketNum: {
     fontSize: 18,
     fontWeight: 'bold',
@@ -256,40 +221,47 @@ const styles = StyleSheet.create({
   },
   facilityName: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
   submittedDate: { fontSize: 13, color: colors.neutral },
-  
-  timeline: { borderLeftWidth: 2, borderLeftColor: colors.gray[200], marginLeft: 10, paddingLeft: 20 },
-  timelineItem: { flexDirection: 'row', marginBottom: 24, position: 'relative' },
-  timelineDot: {
-    position: 'absolute',
-    left: -29,
-    top: 4,
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: '#fff',
+
+  statusRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
   },
-  timelineContent: { flex: 1 },
-  timelineStatus: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 2 },
-  timelineDate: { fontSize: 12, color: colors.neutral },
-  
+  statusLabel: { fontSize: 14, color: colors.neutral, fontWeight: '600' },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  statusBadgeText: { fontSize: 13, fontWeight: '600' },
+
+  commentBox: {
+    backgroundColor: colors.gray[50],
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  commentLabel: { fontSize: 12, fontWeight: '600', color: colors.neutral, marginBottom: 4 },
+  commentText: { fontSize: 14, color: colors.text },
+
   resolutionBox: {
     backgroundColor: '#DCFCE7',
     padding: 12,
     borderRadius: 8,
-    marginTop: 8,
+    marginBottom: 12,
     borderLeftWidth: 3,
     borderLeftColor: colors.success,
   },
   resolutionLabel: { fontSize: 12, fontWeight: '600', color: colors.success, marginBottom: 4 },
-  resolutionText: { fontSize: 13, color: colors.text, marginBottom: 4 },
-  resolvedDate: { fontSize: 12, color: colors.neutral },
-  
+  resolutionText: { fontSize: 13, color: colors.text },
+
   rateSection: {
     backgroundColor: colors.gray[50],
     padding: 16,
     borderRadius: 12,
-    marginTop: 16,
+    marginTop: 8,
   },
   rateQuestion: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 12 },
   rateButtons: { flexDirection: 'row', gap: 12 },
@@ -302,32 +274,7 @@ const styles = StyleSheet.create({
   },
   rateBtnNo: { backgroundColor: colors.gray[200] },
   rateBtnText: { color: '#fff', fontWeight: '600' },
-  
-  historySection: { marginTop: 8 },
-  sectionTitle: { fontSize: 18, fontWeight: 'bold', color: colors.primary.dark, marginBottom: 12 },
-  emptyText: { color: colors.neutral, fontStyle: 'italic', textAlign: 'center', padding: 24 },
-  
-  historyItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: colors.card,
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: colors.gray[100],
-  },
-  historyFacility: { fontSize: 15, fontWeight: '600', color: colors.text },
-  historyMeta: { fontSize: 12, color: colors.neutral, marginTop: 2 },
-  historyStatus: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-  },
-  historyStatusText: { fontSize: 11, fontWeight: '600' },
-  
+
   infoCard: { backgroundColor: colors.primary.light, borderColor: colors.primary.teal },
   infoTitle: { fontSize: 16, fontWeight: 'bold', color: colors.primary.dark, marginBottom: 12 },
   infoList: { gap: 8 },
