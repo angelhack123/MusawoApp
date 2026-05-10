@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TextInput, FlatList, StyleSheet, TouchableOpacity, ScrollView, Modal } from 'react-native';
+import { View, Text, TextInput, FlatList, StyleSheet, TouchableOpacity, ScrollView, Modal, Alert } from 'react-native';
+import { api } from '../api/client';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import StatusBadge from '../components/StatusBadge';
@@ -14,6 +15,7 @@ export default function VerifyScreen({ route }) {
   const [filterSpecialty, setFilterSpecialty] = useState('');
   const [filterDistrict, setFilterDistrict] = useState('');
   const [filterActive, setFilterActive] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [selectedDoctor, setSelectedDoctor] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
   const searchTimeout = useRef(null);

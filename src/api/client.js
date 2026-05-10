@@ -3,17 +3,14 @@ import axios from 'axios';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
-// Detect correct backend URL based on environment
+const PRODUCTION_URL = 'https://musawobackend1-production.up.railway.app/api';
+
 const getBaseUrl = () => {
-  if (Constants.manifest?.debuggerHost?.includes('localhost')) {
-    return 'http://localhost:8000/api'; // Web browser
+  // Use local Django server only when running in Android emulator during development
+  if (__DEV__ && Platform.OS === 'android' && Constants.manifest?.debuggerHost) {
+    return 'http://10.0.2.2:8000/api';
   }
-  if (Platform.OS === 'android') {
-    return 'http://10.0.2.2:8000/api'; // Android Emulator
-  }
-  // Physical devices & iOS simulator: use LAN IP
-  // Replace with your PC's IP or use a .env file
-  return 'http://192.168.5.82:8000/api';
+  return PRODUCTION_URL;
 };
 
 export const api = axios.create({
