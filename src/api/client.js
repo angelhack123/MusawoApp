@@ -8,7 +8,7 @@ const PRODUCTION_URL = 'https://musawobackend1-production.up.railway.app/api';
 const getBaseUrl = () => {
   // Use local Django server only when running in Android emulator during development
   if (__DEV__ && Platform.OS === 'android' && Constants.manifest?.debuggerHost) {
-    return 'http://10.0.2.2:8000/api';
+    return 'https://musawobackend1-production.up.railway.app/api';
   }
   return PRODUCTION_URL;
 };
