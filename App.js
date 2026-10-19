@@ -3,13 +3,17 @@ import 'react-native-gesture-handler';
 import React from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { AppStateProvider } from './src/state/AppState';
 import AppNavigator from './src/navigation/AppNavigator';
 
 export default function App() {
   return (
     <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <AppNavigator />
+      <AppStateProvider>
+        {/* Headers are dark teal throughout, so light status bar content */}
+        <StatusBar style="light" />
+        <AppNavigator />
+      </AppStateProvider>
     </SafeAreaProvider>
   );
 }

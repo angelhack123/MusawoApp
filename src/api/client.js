@@ -1,49 +1,54 @@
 // src/api/client.js
 import axios from 'axios';
-import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import CryptoJS from 'crypto-js';
 import { Platform } from 'react-native';
-
-const PRODUCTION_URL = 'https://musawobackend1-production.up.railway.app/api';
-
-const getBaseUrl = () => {
-  // Use local Django server only when running in Android emulator during development
-  if (__DEV__ && Platform.OS === 'android' && Constants.manifest?.debuggerHost) {
-    return 'https://musawobackend1-production.up.railway.app/api';
-  }
-  return PRODUCTION_URL;
-};
+import { API_URL } from '../config';
 
 export const api = axios.create({
-  baseURL: getBaseUrl(),
-  timeout: 10000,
+  baseURL: API_URL,
+  timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Request interceptor: Add device ID hash (per your data model)
+let deviceHash = null;
+
+// SHA-256 of a random per-install id; the raw id never leaves the device (DPPA)
+export const getDeviceHash = async () => {
+  if (deviceHash) return deviceHash;
+  let deviceId = await AsyncStorage.getItem('device_id');
+  if (!deviceId) {
+    deviceId = `${Platform.OS}-${Date.now()}-${Math.random().toString(36).substring(2)}`;
+    await AsyncStorage.setItem('device_id', deviceId);
+  }
+  deviceHash = CryptoJS.SHA256(deviceId).toString();
+  return deviceHash;
+};
+
 api.interceptors.request.use(async (config) => {
   try {
-    const { default: AsyncStorage } = await import('@react-native-async-storage/async-storage');
-    const { default: CryptoJS } = await import('crypto-js');
-    
-    let deviceId = await AsyncStorage.getItem('device_id');
-    if (!deviceId) {
-      deviceId = `${Platform.OS}-${Date.now()}-${Math.random().toString(36).substring(2)}`;
-      await AsyncStorage.setItem('device_id', deviceId);
-    }
-    
-    // Hash per DPPA requirements
-    const hash = CryptoJS.SHA256(deviceId).toString();
-    config.headers['X-Device-Hash'] = hash;
+    const hash = await getDeviceHash();
+    config.headers['X-Device-Token'] = hash;
   } catch {}
   return config;
 });
 
-// Response interceptor: Standardize errors
+// Normalise every failure to { message, code, status, offline }
+const firstFieldError = (data) => {
+  if (!data || typeof data !== 'object') return null;
+  const value = Object.values(data)[0];
+  const text = Array.isArray(value) ? value[0] : value;
+  return typeof text === 'string' ? text.replace(/^[A-Z_]+: /, '') : null;
+};
+
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    const message = err.response?.data?.detail || err.message || 'Network error';
-    console.error('API Error:', message);
-    return Promise.reject({ message, status: err.response?.status });
+    const data = err.response?.data;
+    const offline = !err.response;
+    const message =
+      data?.error?.message || data?.detail || firstFieldError(data) ||
+      (offline ? 'You appear to be offline' : err.message) || 'Network error';
+    return Promise.reject({ message, code: data?.error?.code, status: err.response?.status, offline, data });
   }
 );

@@ -1,42 +1,31 @@
-import { Linking, Platform, Alert } from 'react-native';
+// Share a verification result (US-1.6): WhatsApp first, native share sheet as fallback.
+import { Linking, Share } from 'react-native';
+import { withTitle } from './format';
 
-export const shareViaWhatsApp = async (doctor) => {
-  const statusText = doctor.status === 'ACTIVE' 
-    ? 'LICENSED & ACTIVE ✓' 
-    : doctor.status.replace('_', ' ').toUpperCase();
-    
-  const message = `👨‍⚕️ Dr. ${doctor.full_name} (${doctor.registration_number}) is ${statusText} — Verified on Musawo app`;
-  
-  // Encode message for URL
-  const encodedMessage = encodeURIComponent(message);
-  
-  // WhatsApp URL schemes
-  const whatsappUrl = Platform.select({
-    ios: `whatsapp://send?text=${encodedMessage}`,
-    android: `https://wa.me/?text=${encodedMessage}`,
-    default: `https://web.whatsapp.com/send?text=${encodedMessage}`,
-  });
+const STATUS_TEXT = {
+  ACTIVE: 'LICENSED & ACTIVE ✓',
+  SUSPENDED: 'SUSPENDED ⚠',
+  EXPIRED: 'LICENSE EXPIRED',
+  DECEASED: 'DECEASED',
+};
 
+// e.g. "Dr. John Mukasa (MDC/12345) is LICENSED & ACTIVE ✓ — Verified on Musawo app"
+export const verificationMessage = (doctor) =>
+  `${withTitle(doctor.full_name)} (${doctor.registration_number}) is ${STATUS_TEXT[doctor.status] || doctor.status} — Verified on Musawo app`;
+
+export const shareDoctor = async (doctor) => {
   try {
-    // Check if WhatsApp is installed
-    const supported = await Linking.canOpenURL(whatsappUrl);
-    
-    if (supported) {
-      await Linking.openURL(whatsappUrl);
-    } else {
-      // Fallback: copy to clipboard + alert
-      await Clipboard.setStringAsync(message);
-      Alert.alert(
-        'WhatsApp Not Found',
-        'Message copied to clipboard. Please paste it in WhatsApp manually.',
-        [{ text: 'OK' }]
-      );
+    await Share.share({ message: verificationMessage(doctor) });
+  } catch {}
+};
+
+export const shareDoctorWhatsApp = async (doctor) => {
+  const url = `whatsapp://send?text=${encodeURIComponent(verificationMessage(doctor))}`;
+  try {
+    if (await Linking.canOpenURL(url)) {
+      await Linking.openURL(url);
+      return;
     }
-  } catch (error) {
-    // Final fallback: copy to clipboard
-    try {
-      await Clipboard.setStringAsync(message);
-      Alert.alert('Copied', 'Verification details copied to clipboard');
-    } catch {}
-  }
+  } catch {}
+  await shareDoctor(doctor);
 };

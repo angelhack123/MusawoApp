@@ -1,20 +1,26 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../theme/colors';
+import { colors } from '../theme';
+import { useT } from '../state/AppState';
 
-const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const MONTHS = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-];
+const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 const toDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
 export default function CalendarPicker({ value, onChange, minDate, maxDate }) {
+  const t = useT();
+  const MONTHS = t('calendar.months');
   const initial = value ? new Date(value) : new Date();
   const [viewYear, setViewYear] = useState(initial.getFullYear());
   const [viewMonth, setViewMonth] = useState(initial.getMonth());
+
+  // Follow external changes (e.g. "This Week" quick-select crossing into last month)
+  useEffect(() => {
+    if (!value) return;
+    setViewYear(value.getFullYear());
+    setViewMonth(value.getMonth());
+  }, [value?.getFullYear(), value?.getMonth()]);
 
   const firstWeekday = new Date(viewYear, viewMonth, 1).getDay();
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
@@ -84,7 +90,7 @@ export default function CalendarPicker({ value, onChange, minDate, maxDate }) {
           disabled={!canGoPrev()}
           style={[styles.navBtn, !canGoPrev() && styles.navBtnDisabled]}
         >
-          <Ionicons name="chevron-back" size={22} color={canGoPrev() ? colors.primary.teal : colors.gray[300]} />
+          <Ionicons name="chevron-back" size={22} color={canGoPrev() ? colors.primary : colors.placeholder} />
         </TouchableOpacity>
 
         <Text style={styles.monthYear}>{MONTHS[viewMonth]} {viewYear}</Text>
@@ -94,14 +100,14 @@ export default function CalendarPicker({ value, onChange, minDate, maxDate }) {
           disabled={!canGoNext()}
           style={[styles.navBtn, !canGoNext() && styles.navBtnDisabled]}
         >
-          <Ionicons name="chevron-forward" size={22} color={canGoNext() ? colors.primary.teal : colors.gray[300]} />
+          <Ionicons name="chevron-forward" size={22} color={canGoNext() ? colors.primary : colors.placeholder} />
         </TouchableOpacity>
       </View>
 
       {/* Day-of-week headers */}
       <View style={styles.weekRow}>
-        {DAYS.map(d => (
-          <Text key={d} style={styles.dayHeader}>{d}</Text>
+        {DAY_KEYS.map(d => (
+          <Text key={d} style={styles.dayHeader}>{t(`calendar.days.${d}`)}</Text>
         ))}
       </View>
 
@@ -125,6 +131,9 @@ export default function CalendarPicker({ value, onChange, minDate, maxDate }) {
                 onPress={() => selectDay(day)}
                 disabled={disabled}
                 activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel={`${day} ${MONTHS[viewMonth]} ${viewYear}`}
+                accessibilityState={{ selected, disabled }}
               >
                 <Text style={[
                   styles.dayText,
@@ -159,7 +168,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     borderWidth: 1,
-    borderColor: colors.gray[200],
+    borderColor: colors.border,
   },
   header: {
     flexDirection: 'row',
@@ -177,7 +186,7 @@ const styles = StyleSheet.create({
   monthYear: {
     fontSize: 17,
     fontWeight: 'bold',
-    color: colors.primary.dark,
+    color: colors.primaryDark,
   },
   weekRow: {
     flexDirection: 'row',
@@ -202,10 +211,10 @@ const styles = StyleSheet.create({
   },
   cellToday: {
     borderWidth: 2,
-    borderColor: colors.primary.teal,
+    borderColor: colors.primary,
   },
   cellSelected: {
-    backgroundColor: colors.primary.teal,
+    backgroundColor: colors.primary,
   },
   cellDisabled: {
     opacity: 0.25,
@@ -216,7 +225,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   dayTextToday: {
-    color: colors.primary.teal,
+    color: colors.primary,
     fontWeight: '700',
   },
   dayTextSelected: {
@@ -233,7 +242,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: colors.gray[100],
+    borderTopColor: colors.neutralBg,
   },
   selectedText: {
     fontSize: 13,

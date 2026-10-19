@@ -1,904 +1,749 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Modal, Alert, ActivityIndicator } from 'react-native';
+// SCR-006 → SCR-010: the "Voice Engine" wizard (US-2.1 – US-2.7).
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../theme/colors';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Clipboard from 'expo-clipboard';
-import { api } from '../api/client';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { colors, radius, shadow, space, touch } from '../theme';
+import { useAppState } from '../state/AppState';
+import { FacilitiesAPI, FeedbackAPI, ReferenceAPI, rememberTicket } from '../api/musawo';
+import { storage } from '../utils/storage';
+import { daysAgo, formatDate, formatLongDate, parseDate, sameDay, toISODate } from '../utils/format';
+import { COMMENT_MAX, FEEDBACK_WINDOW_DAYS } from '../config';
+import AppBar from '../components/AppBar';
 import CalendarPicker from '../components/CalendarPicker';
+import SearchInput from '../components/SearchInput';
+import { InfoSheet, SelectSheet } from '../components/Sheet';
+import { Stars } from '../components/Rating';
+import { SkeletonList } from '../components/Skeleton';
+import { FacilityCard } from '../components/Cards';
+import { Banner, Button, Card, Chip, IconButton, IconCircle, ProgressSegments, Txt } from '../components/ui';
 
-const MOCK_FACILITIES = [
-  { id: 'f1', name: 'Mulago National Referral Hospital', type: 'Hospital', district: 'Kampala', score: 3.8 },
-  { id: 'f2', name: 'Nsambya Hospital', type: 'Hospital', district: 'Kampala', score: 4.2 },
-  { id: 'f3', name: 'St. Francis Hospital Nsambya', type: 'Health Centre IV', district: 'Kampala', score: 4.0 },
-  { id: 'f4', name: 'Entebbe Health Centre III', type: 'Health Centre III', district: 'Entebbe', score: 3.5 },
-  { id: 'f5', name: 'Jinja Regional Hospital', type: 'Hospital', district: 'Jinja', score: 3.2 },
-];
-
+// Five rights-based questions (PRD §5.1, US-2.4). `inverted`: "Yes" is the bad answer.
 const QUESTIONS = [
-  { id: 'q1_introduced', q: 'Did the healthcare provider introduce themselves by name?', type: 'yn', right: 'Patient Charter: You have the right to know the identity of those treating you.' },
-  { id: 'q2_explained', q: 'Did they explain your diagnosis in words you understood?', type: 'ynna', right: 'Right to clear communication and understandable medical information.' },
-  { id: 'q3_sideeffects', q: 'Did they explain any side effects of your treatment?', type: 'ynna', right: 'Right to informed consent and awareness of treatment risks.' },
-  { id: 'q4_payment', q: 'Were you asked for any payment outside the official bill?', type: 'yn', right: 'Right to transparent billing. (Triggers automatic flag)' },
-  { id: 'q5_rating', q: 'Overall, how would you rate your experience?', type: 'stars', right: 'Your rating helps improve care quality for all Ugandans.' },
+  { id: 'q1_introduced', icon: 'person', options: ['yes', 'no'] },
+  { id: 'q2_explained', icon: 'chatbubbles', options: ['yes', 'no', 'na'] },
+  { id: 'q3_side_effects', icon: 'medkit', options: ['yes', 'no', 'na'] },
+  { id: 'q4_unofficial_payment', icon: 'cash', options: ['yes', 'no'], inverted: true },
+  { id: 'q5_overall_rating', icon: 'star', stars: true },
 ];
 
-export default function FeedbackScreen({ navigation }) {
-  const [step, setStep] = useState(1);
-  const [facilityQuery, setFacilityQuery] = useState('');
-  const [facilityResults, setFacilityResults] = useState([]);
-  const [selectedFacility, setSelectedFacility] = useState(null);
-  const [recentFacilities, setRecentFacilities] = useState([]);
-  const [visitDate, setVisitDate] = useState(new Date());
-  const [answers, setAnswers] = useState({});
-  const [comment, setComment] = useState('');
-  const [anonymous, setAnonymous] = useState(true);
-  const [submitted, setSubmitted] = useState(false);
-  const [ticketNumber, setTicketNumber] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [infoModal, setInfoModal] = useState({ visible: false, title: '', desc: '' });
+const ANSWER_STYLE = {
+  good: { bg: colors.successBg, fg: colors.successText, border: colors.success },
+  bad: { bg: colors.dangerBg, fg: colors.dangerText, border: colors.danger },
+  na: { bg: colors.neutralBg, fg: colors.neutralText, border: colors.neutral },
+};
+const answerTone = (q, opt) => (opt === 'na' ? 'na' : (opt === 'yes') !== !!q.inverted ? 'good' : 'bad');
+const ANSWER_ICON = { yes: 'checkmark-circle', no: 'close-circle', na: 'remove-circle' };
+const toBool = (a) => (a === 'yes' ? true : a === 'no' ? false : null);
 
-  useEffect(() => {
-    loadRecentFacilities();
-    loadDraft();
-  }, []);
+const MANUAL_TYPES = ['GENERAL_HOSPITAL', 'HC_IV', 'HC_III', 'HC_II', 'CLINIC', 'PHARMACY'];
 
-  const loadRecentFacilities = async () => {
-    try {
-      const stored = await AsyncStorage.getItem('recentFacilities');
-      if (stored) setRecentFacilities(JSON.parse(stored));
-    } catch {}
-  };
-
-  const loadDraft = async () => {
-    try {
-      const draft = await AsyncStorage.getItem('feedbackDraft');
-      if (draft) {
-        const data = JSON.parse(draft);
-        if (Date.now() - data.savedAt < 86400000) {
-          if (data.facility) setSelectedFacility(data.facility);
-          if (data.visitDate) setVisitDate(new Date(data.visitDate));
-          if (data.answers) setAnswers(data.answers);
-          if (data.comment) setComment(data.comment);
-          if (data.anonymous !== undefined) setAnonymous(data.anonymous);
-          if (data.step) setStep(data.step);
-        }
-      }
-    } catch {}
-  };
-
-  const saveDraft = async () => {
-    try {
-      await AsyncStorage.setItem('feedbackDraft', JSON.stringify({
-        facility: selectedFacility,
-        visitDate: visitDate.toISOString(),
-        answers,
-        comment,
-        anonymous,
-        step,
-        savedAt: Date.now(),
-      }));
-    } catch {}
-  };
-
-  const searchFacilities = async (query) => {
-    setFacilityQuery(query);
-    if (query.length >= 2) {
-      try {
-        const res = await api.get('/facilities/', { params: { search: query } });
-        setFacilityResults(res.data.results || res.data);
-      } catch {
-        setFacilityResults([]);
-      }
-    } else {
-      setFacilityResults([]);
-    }
-  };
-
-  const selectFacility = async (facility) => {
-    setSelectedFacility(facility);
-    const recent = [facility, ...recentFacilities.filter(f => f.id !== facility.id)].slice(0, 3);
-    setRecentFacilities(recent);
-    await AsyncStorage.setItem('recentFacilities', JSON.stringify(recent));
-    saveDraft();
-  };
-
-  const selectAnswer = (questionId, value) => {
-    setAnswers(prev => ({ ...prev, [questionId]: value }));
-    saveDraft();
-  };
-
-  const isQuickMatch = (label, date) => {
-    const today = new Date();
-    const d = new Date(date);
-    if (label === 'Today') return d.toDateString() === today.toDateString();
-    if (label === 'Yesterday') {
-      const y = new Date(); y.setDate(y.getDate() - 1);
-      return d.toDateString() === y.toDateString();
-    }
-    if (label === 'This Week') {
-      const w = new Date(); w.setDate(w.getDate() - 7);
-      return d.toDateString() === w.toDateString();
-    }
-    return false;
-  };
-
-  const showInfo = (title, desc) => {
-    setInfoModal({ visible: true, title, desc });
-  };
-
-  const canProceed = () => {
-    if (step === 1) return selectedFacility !== null && selectedFacility !== undefined;
-    if (step === 2) return visitDate !== null;
-    if (step === 3) return Object.keys(answers).length >= 3;
-    return true;
-  };
-
-  const nextStep = () => {
-    if (canProceed()) {
-      setStep(prev => prev + 1);
-      saveDraft();
-    }
-  };
-
-  const prevStep = () => {
-    setStep(prev => Math.max(1, prev - 1));
-  };
-
-// In submitFeedback():
-const submitFeedback = async () => {
-  if (!selectedFacility || !visitDate) {
-    Alert.alert('Incomplete', 'Please select facility and date');
-    return;
-  }
-
-  setLoading(true);
-  try {
-    const payload = {
-      facility: selectedFacility?.id || selectedFacility,
-      visit_date: visitDate.toISOString().split('T')[0],
-      is_anonymous: anonymous,
-      q1_introduced: answers.q1_introduced,
-      q2_explained: answers.q2_explained,
-      q3_side_effects: answers.q3_side_effects,
-      q4_unofficial_payment: answers.q4_payment,
-      q5_overall_rating: answers.q5_rating,
-      comment: comment || null,
-    };
-
-    const res = await api.post('/feedback/', payload);
-    setTicketNumber(res.data.ticket_number || null);
-    setSubmitted(true);
-    await AsyncStorage.removeItem('feedbackDraft');
-  } catch (err) {
-    Alert.alert('Submission Failed', err.message || 'Check connection and try again.');
-  } finally {
-    setLoading(false);
-  }
+// Monday of the current week (the "This Week" quick-select)
+const startOfWeek = () => {
+  const d = daysAgo(0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d;
 };
 
-  const copyTicket = async () => {
-    if (ticketNumber) {
-      try {
-        await Clipboard.setStringAsync(ticketNumber);
-        Alert.alert('Copied', 'Ticket number saved to clipboard');
-      } catch {}
+export default function FeedbackScreen({ navigation, route }) {
+  const { t, settings } = useAppState();
+  const insets = useSafeAreaInsets();
+  const [step, setStep] = useState(1);
+  const [qIndex, setQIndex] = useState(0);
+  const [facility, setFacility] = useState(null);
+  const [visitDate, setVisitDate] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [comment, setComment] = useState('');
+  const [anonymous, setAnonymous] = useState(true);   // Default ON (US-2.6)
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState(null);
+  const [info, setInfo] = useState(null);
+  const scrollRef = useRef(null);
+  const advanceTimer = useRef(null);
+  const loaded = useRef(false);
+
+  const dirty = !result && Boolean(facility || visitDate || Object.keys(answers).length || comment);
+
+  // Prefill from a facility profile, otherwise offer to resume a draft (24h)
+  useEffect(() => {
+    (async () => {
+      if (route.params?.facility) {
+        setFacility(route.params.facility);
+        storage.addRecentFacility(route.params.facility);
+      } else {
+        const draft = await storage.getFeedbackDraft();
+        if (draft?.facility || draft?.answers && Object.keys(draft.answers).length) {
+          Alert.alert(t('feedback.resumeTitle'), t('feedback.resumeBody'), [
+            { text: t('feedback.startOver'), style: 'destructive', onPress: () => storage.clearFeedbackDraft() },
+            {
+              text: t('feedback.resume'),
+              onPress: () => {
+                setFacility(draft.facility || null);
+                setVisitDate(draft.visitDate ? parseDate(draft.visitDate) : null);
+                setAnswers(draft.answers || {});
+                setComment(draft.comment || '');
+                setAnonymous(draft.anonymous ?? true);
+                setStep(draft.step || 1);
+                setQIndex(draft.qIndex || 0);
+              },
+            },
+          ]);
+        }
+      }
+      loaded.current = true;
+    })();
+    return () => clearTimeout(advanceTimer.current);
+  }, []);
+
+  // Autosave progress (US-2.1)
+  useEffect(() => {
+    if (!loaded.current || !dirty) return;
+    const timer = setTimeout(() => storage.saveFeedbackDraft({
+      facility, visitDate: visitDate && toISODate(visitDate), answers, comment, anonymous, step, qIndex,
+    }), 400);
+    return () => clearTimeout(timer);
+  }, [facility, visitDate, answers, comment, anonymous, step, qIndex, dirty]);
+
+  // Confirm before leaving mid-way, including Android back (US-2.1)
+  useEffect(() => navigation.addListener('beforeRemove', (e) => {
+    if (!dirty) return;
+    e.preventDefault();
+    Alert.alert(t('feedback.exitTitle'), t('feedback.exitBody'), [
+      { text: t('feedback.keepGoing'), style: 'cancel' },
+      { text: t('feedback.exit'), style: 'destructive', onPress: () => navigation.dispatch(e.data.action) },
+    ]);
+  }), [navigation, dirty, t]);
+
+  const goStep = (n) => {
+    setStep(n);
+    scrollRef.current?.scrollTo({ y: 0, animated: false });
+  };
+
+  const answer = (q, value) => {
+    setAnswers(prev => ({ ...prev, [q.id]: value }));
+    // Auto-advance after a short beat so the selection is visible (SCR-008)
+    clearTimeout(advanceTimer.current);
+    advanceTimer.current = setTimeout(() => {
+      if (qIndex < QUESTIONS.length - 1) setQIndex(i => i + 1);
+      else goStep(4);
+    }, 350);
+  };
+
+  const submit = async () => {
+    const payload = {
+      facility_id: facility.id,
+      visit_date: toISODate(visitDate),
+      is_anonymous: anonymous,
+      q1_introduced: toBool(answers.q1_introduced),
+      q2_explained: toBool(answers.q2_explained),
+      q3_side_effects: toBool(answers.q3_side_effects),
+      q4_unofficial_payment: toBool(answers.q4_unofficial_payment),
+      q5_overall_rating: answers.q5_overall_rating,
+      comment: comment.trim() || null,
+    };
+    setSubmitting(true);
+    try {
+      const res = await FeedbackAPI.submit(payload);
+      await rememberTicket(res, facility.name);
+      await storage.clearFeedbackDraft();
+      setResult({ ticket: res.ticket_number, escalated: res.is_escalated });
+    } catch (err) {
+      if (err.offline) {
+        // Queue and send later (UI Spec Mandate 4)
+        const queue = await storage.getFeedbackQueue();
+        await storage.setFeedbackQueue([...queue, { payload, facilityName: facility.name, queuedAt: Date.now() }]);
+        await storage.clearFeedbackDraft();
+        setResult({ queued: true, escalated: payload.q4_unofficial_payment });
+      } else {
+        Alert.alert(t('feedback.submitFailed'), err.message);
+      }
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  const exitConfirm = () => {
-    Alert.alert(
-      'Exit Feedback?',
-      'Your progress will be saved for 24 hours.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Exit', onPress: () => navigation.goBack() },
-      ]
-    );
-  };
-
-  // Render Step 1: Facility Selection
-  const renderStep1 = () => (
-    <View>
-      <Text style={styles.stepTitle}>Select Facility</Text>
-      <View style={styles.searchBox}>
-        <Ionicons name="search" size={20} color={colors.neutral} style={styles.searchIcon} />
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search facility name..."
-          value={facilityQuery}
-          onChangeText={searchFacilities}
-          placeholderTextColor={colors.neutral}
-        />
-      </View>
-      
-      {recentFacilities.length > 0 && (
-        <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Recent</Text>
-          {recentFacilities.map(facility => (
-            <TouchableOpacity
-              key={facility.id}
-              style={[styles.facilityOption, selectedFacility?.id === facility.id && styles.facilityOptionSelected]}
-              onPress={() => selectFacility(facility)}
-            >
-              <View>
-                <Text style={styles.facilityName}>{facility.name}</Text>
-                <Text style={styles.facilitySub}>{facility.type || facility.facility_type}</Text>
-              </View>
-              {selectedFacility?.id === facility.id && (
-                <Ionicons name="checkmark-circle" size={24} color={colors.primary.teal} />
-              )}
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-
-      <View style={styles.section}>
-        <Text style={styles.sectionLabel}>Search Results</Text>
-        {facilityResults.length === 0 ? (
-          <Text style={styles.emptyText}>Type to search facilities...</Text>
-        ) : (
-          facilityResults.map(facility => (
-            <TouchableOpacity
-              key={facility.id}
-              style={[styles.facilityOption, selectedFacility?.id === facility.id && styles.facilityOptionSelected]}
-              onPress={() => selectFacility(facility)}
-            >
-              <View>
-                <Text style={styles.facilityName}>{facility.name}</Text>
-                <Text style={styles.facilitySub}>{facility.district} • {facility.type || facility.facility_type}</Text>
-              </View>
-              {selectedFacility?.id === facility.id && (
-                <Ionicons name="checkmark-circle" size={24} color={colors.primary.teal} />
-              )}
-            </TouchableOpacity>
-          ))
-        )}
-      </View>
-
-      <TouchableOpacity 
-        style={styles.manualBtn}
-        onPress={() => Alert.alert('Manual Entry', 'Feature coming soon. Please search or select a recent facility.')}
-      >
-        <Text style={styles.manualText}>Can't find facility? Add manually</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  // Render Step 2: Visit Date
-  const renderStep2 = () => (
-    <View>
-      <Text style={styles.stepTitle}>When did you visit?</Text>
-
-      <View style={styles.quickDates}>
-        {['Today', 'Yesterday', 'This Week'].map(label => (
-          <TouchableOpacity
-            key={label}
-            style={[styles.quickDateBtn, visitDate && isQuickMatch(label, visitDate) && styles.quickDateBtnActive]}
-            onPress={() => {
-              const d = new Date();
-              if (label === 'Yesterday') d.setDate(d.getDate() - 1);
-              if (label === 'This Week') d.setDate(d.getDate() - 7);
-              setVisitDate(d);
-              saveDraft();
-            }}
-          >
-            <Text style={[styles.quickDateText, visitDate && isQuickMatch(label, visitDate) && styles.quickDateTextActive]}>
-              {label}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      <CalendarPicker
-        value={visitDate}
-        onChange={(date) => { setVisitDate(date); saveDraft(); }}
-        maxDate={new Date()}
-        minDate={new Date(Date.now() - 30 * 86400000)}
-      />
-
-      <Text style={styles.dateHint}>Only visits within the last 30 days are accepted.</Text>
-    </View>
-  );
-
-  // Render Step 3: Questions
-  const renderStep3 = () => (
-    <View>
-      <Text style={styles.stepTitle}>Your Experience</Text>
-      <View style={styles.infoBox}>
-        <Text style={styles.infoText}>
-          Questions derived from the Uganda Patient Charter. Answer honestly.
-        </Text>
-      </View>
-
-      {QUESTIONS.map((q, index) => (
-        <View key={q.id} style={styles.questionCard}>
-          <View style={styles.questionHeader}>
-            <Text style={styles.questionText}>Q{index + 1}: {q.q}</Text>
-            <TouchableOpacity onPress={() => showInfo('Patient Right', q.right)}>
-              <Ionicons name="information-circle" size={20} color={colors.primary.teal} />
-            </TouchableOpacity>
-          </View>
-          
-          <View style={styles.answerOptions}>
-            {q.type === 'stars' ? (
-              <View style={styles.starRow}>
-                {[1, 2, 3, 4, 5].map(n => (
-                  <TouchableOpacity
-                    key={n}
-                    style={[styles.star, answers[q.id] >= n && styles.starActive]}
-                    onPress={() => selectAnswer(q.id, n)}
-                  >
-                    <Text style={answers[q.id] >= n ? styles.starTextActive : styles.starText}>★</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            ) : (
-              <View style={styles.btnRow}>
-                {(q.type === 'ynna' ? ['Yes', 'No', 'N/A'] : ['Yes', 'No']).map(opt => (
-                  <TouchableOpacity
-                    key={opt}
-                    style={[
-                      styles.answerBtn,
-                      answers[q.id] === opt && styles.answerBtnActive,
-                    ]}
-                    onPress={() => selectAnswer(q.id, opt)}
-                  >
-                    <Text style={answers[q.id] === opt ? styles.answerTextActive : styles.answerText}>
-                      {opt}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-          </View>
-        </View>
-      ))}
-    </View>
-  );
-
-  // Render Step 4: Final Details
-  const renderStep4 = () => (
-    <View>
-      <Text style={styles.stepTitle}>Final Details</Text>
-      
-      <View style={styles.textAreaWrap}>
-        <TextInput
-          style={styles.textArea}
-          placeholder="Tell us more about your experience (optional)"
-          maxLength={500}
-          value={comment}
-          onChangeText={(text) => { setComment(text); saveDraft(); }}
-          multiline
-          placeholderTextColor={colors.neutral}
-        />
-        <Text style={styles.charCount}>{comment.length}/500</Text>
-      </View>
-
-      <TouchableOpacity 
-        style={styles.anonToggle}
-        onPress={() => { setAnonymous(!anonymous); saveDraft(); }}
-      >
-        <View style={[styles.toggleTrack, anonymous && styles.toggleTrackActive]}>
-          <View style={[styles.toggleDot, anonymous && styles.toggleDotActive]} />
-        </View>
-        <View style={styles.anonInfo}>
-          <Text style={styles.anonTitle}>Submit Anonymously</Text>
-          <Text style={styles.anonDesc}>
-            {anonymous 
-              ? "Your identity will not be shared with the facility or anyone else." 
-              : "You will receive a ticket number to track your complaint's progress."}
-          </Text>
-        </View>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.submitBtn, (!canProceed() || loading) && styles.submitBtnDisabled]}
-        onPress={submitFeedback}
-        disabled={!canProceed() || loading}
-      >
-        {loading
-          ? <ActivityIndicator color="#fff" />
-          : <Text style={styles.submitText}>Submit Feedback</Text>
-        }
-      </TouchableOpacity>
-    </View>
-  );
-
-  // Render Success Screen
-  const renderSuccess = () => (
-    <View style={styles.successContainer}>
-      <View style={styles.checkCircle}>
-        <Ionicons name="checkmark" size={40} color={colors.success} />
-      </View>
-      <Text style={styles.successTitle}>Thank You!</Text>
-      <Text style={styles.successDesc}>
-        Your feedback helps improve healthcare for all Ugandans.
-      </Text>
-      
-      {ticketNumber && !anonymous && (
-        <View style={styles.ticketBox}>
-          <Text style={styles.ticketLabel}>Your Ticket Number</Text>
-          <Text style={styles.ticketNum}>{ticketNumber}</Text>
-          <TouchableOpacity style={styles.copyBtn} onPress={copyTicket}>
-            <Text style={styles.copyText}>📋 Copy to Clipboard</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      <View style={styles.nextSteps}>
-        <Text style={styles.nextStepsTitle}>What happens next?</Text>
-        <Text style={styles.nextStepsText}>• Our team reviews your feedback within 48 hours</Text>
-        <Text style={styles.nextStepsText}>• Facilities are notified of constructive feedback</Text>
-        <Text style={styles.nextStepsText}>• Official payments (Q4) are auto-escalated to UMDPC</Text>
-      </View>
-
-      <TouchableOpacity 
-        style={styles.homeBtn}
-        onPress={() => {
-          setSubmitted(false);
-          setStep(1);
-          setAnswers({});
-          setComment('');
-          setSelectedFacility(null);
-          navigation.navigate('Home');
-        }}
-      >
-        <Text style={styles.homeText}>Return Home</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  if (submitted) {
-    return renderSuccess();
+  if (result) {
+    return <SuccessView result={result} anonymous={anonymous} navigation={navigation} />;
   }
 
+  const canContinue = step === 1 ? !!facility : step === 2 ? !!visitDate : true;
+  const question = QUESTIONS[qIndex];
+
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Give Feedback</Text>
-        <TouchableOpacity onPress={exitConfirm}>
-          <Text style={styles.exitText}>Exit</Text>
-        </TouchableOpacity>
-      </View>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <AppBar
+        title={t('feedback.title')}
+        subtitle={t('feedback.stepOf', { step, total: 4 })}
+        right={<IconButton icon="close" onPress={() => navigation.goBack()} label={t('feedback.exit')} />}
+      >
+        <ProgressSegments total={4} current={step} light style={{ marginTop: space.md }} />
+      </AppBar>
 
-      {/* Progress Indicator */}
-      <View style={styles.progressContainer}>
-        {[1, 2, 3, 4].map(n => (
-          <View 
-            key={n} 
-            style={[
-              styles.progressDot,
-              n < step && styles.progressDotDone,
-              n === step && styles.progressDotActive,
-            ]} 
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {step === 1 && (
+          <FacilityStep facility={facility} onSelect={(f) => { setFacility(f); storage.addRecentFacility(f); }} />
+        )}
+
+        {step === 2 && (
+          <View>
+            <StepHeading icon="calendar" title={t('feedback.dateTitle')} />
+            <View style={styles.quickRow}>
+              {[
+                ['today', daysAgo(0)],
+                ['yesterday', daysAgo(1)],
+                ['thisWeek', startOfWeek()],
+              ].map(([key, date], i, all) => {
+                // Today/Yesterday win if "This Week" lands on the same day
+                const selected = sameDay(visitDate, date) && !all.slice(0, i).some(([, d]) => sameDay(d, date));
+                return <Chip key={key} label={t(`feedback.${key}`)} selected={selected} onPress={() => setVisitDate(date)} style={styles.quickChip} />;
+              })}
+            </View>
+            <CalendarPicker
+              value={visitDate}
+              onChange={setVisitDate}
+              maxDate={daysAgo(0)}
+              minDate={daysAgo(FEEDBACK_WINDOW_DAYS)}
+            />
+            <Banner tone="info" icon="time" text={t('feedback.dateLimit')} style={{ marginTop: space.md }} />
+          </View>
+        )}
+
+        {step === 3 && (
+          <View>
+            <View style={styles.qCounterRow}>
+              <Txt variant="label" color={colors.primary} style={{ fontWeight: '700' }}>
+                {t('feedback.questionOf', { n: qIndex + 1, total: QUESTIONS.length })}
+              </Txt>
+              <View style={styles.qDots}>
+                {QUESTIONS.map((q, i) => (
+                  <Pressable key={q.id} onPress={() => setQIndex(i)} hitSlop={6} accessibilityLabel={t('feedback.questionOf', { n: i + 1, total: QUESTIONS.length })}>
+                    <View style={[styles.qDot, answers[q.id] != null && styles.qDotDone, i === qIndex && styles.qDotActive]} />
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            <Card style={styles.questionCard} key={question.id}>
+              <View style={styles.questionTop}>
+                <IconCircle icon={question.icon} size={52} />
+                <IconButton
+                  icon="information-circle"
+                  color={colors.primary}
+                  bg={colors.primaryLight}
+                  onPress={() => setInfo(question)}
+                  label={t('feedback.aboutRight')}
+                />
+              </View>
+              <Txt variant="bodyLg" style={styles.questionText}>{t(`questions.${question.id}.text`)}</Txt>
+
+              {question.stars ? (
+                <View style={{ marginTop: space.lg }}>
+                  <Stars
+                    value={answers[question.id] || 0}
+                    onChange={(n) => answer(question, n)}
+                    labels={[t('feedback.poor'), t('feedback.excellent')]}
+                  />
+                  {answers[question.id] ? (
+                    <Txt variant="h3" color={colors.primaryDark} style={{ textAlign: 'center', marginTop: space.md }}>
+                      {t(`feedback.rating${answers[question.id]}`)}
+                    </Txt>
+                  ) : null}
+                </View>
+              ) : (
+                <View style={{ marginTop: space.lg }}>
+                  {question.options.map(opt => {
+                    const tone = ANSWER_STYLE[answerTone(question, opt)];
+                    const selected = answers[question.id] === opt;
+                    return (
+                      <Pressable
+                        key={opt}
+                        onPress={() => answer(question, opt)}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: selected }}
+                        style={({ pressed }) => [
+                          styles.answerBtn,
+                          { backgroundColor: tone.bg, borderColor: selected ? tone.border : 'transparent' },
+                          pressed && { opacity: 0.85 },
+                        ]}
+                      >
+                        <Ionicons name={ANSWER_ICON[opt]} size={26} color={tone.fg} />
+                        <Txt variant="bodyLg" color={tone.fg} style={{ marginLeft: space.md, fontWeight: '700', flex: 1 }}>{t(`feedback.${opt}`)}</Txt>
+                        {selected ? <Ionicons name="checkmark" size={24} color={tone.fg} /> : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+            </Card>
+
+            {question.id === 'q4_unofficial_payment' && (
+              <Txt variant="caption" color={colors.textSecondary} style={{ marginTop: space.sm, textAlign: 'center' }}>{t('feedback.q4Note')}</Txt>
+            )}
+            {qIndex > 0 && (
+              <Button variant="text" title={t('feedback.previousQuestion')} icon="arrow-back" onPress={() => setQIndex(i => i - 1)} style={{ alignSelf: 'center', marginTop: space.md }} />
+            )}
+          </View>
+        )}
+
+        {step === 4 && (
+          <ReviewStep
+            facility={facility}
+            visitDate={visitDate}
+            answers={answers}
+            comment={comment}
+            setComment={setComment}
+            anonymous={anonymous}
+            setAnonymous={setAnonymous}
+            onEditQuestion={(i) => { setQIndex(i); goStep(3); }}
+            onEditStep={goStep}
           />
-        ))}
-      </View>
-      <Text style={styles.stepIndicator}>Step {step} of 4</Text>
-
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.card}>
-          {step === 1 && renderStep1()}
-          {step === 2 && renderStep2()}
-          {step === 3 && renderStep3()}
-          {step === 4 && renderStep4()}
-        </View>
+        )}
       </ScrollView>
 
-      {/* Navigation Buttons */}
-      <View style={styles.navButtons}>
-        {step > 1 && (
-          <TouchableOpacity style={styles.prevBtn} onPress={prevStep}>
-            <Text style={styles.prevText}>Back</Text>
-          </TouchableOpacity>
+      <View style={[styles.footer, { paddingBottom: insets.bottom + space.md }]}>
+        {step > 1 && step !== 3 && (
+          <Button title={t('common.back')} variant="secondary" onPress={() => goStep(step - 1)} style={{ flex: 1 }} />
         )}
-        {step < 4 && (
-          <TouchableOpacity 
-            style={[styles.nextBtn, !canProceed() && styles.nextBtnDisabled]}
-            onPress={nextStep}
-            disabled={!canProceed()}
-          >
-            <Text style={styles.nextText}>Next</Text>
-          </TouchableOpacity>
+        {step === 3 && (
+          <Button title={t('common.back')} variant="secondary" onPress={() => goStep(2)} style={{ flex: 1 }} />
+        )}
+        {step < 3 && (
+          <Button title={t('common.continue')} onPress={() => goStep(step + 1)} disabled={!canContinue} icon="arrow-forward" style={{ flex: 2 }} />
+        )}
+        {step === 3 && (
+          <Button
+            title={t('common.continue')}
+            onPress={() => goStep(4)}
+            disabled={QUESTIONS.some(q => answers[q.id] == null)}
+            icon="arrow-forward"
+            style={{ flex: 2 }}
+          />
+        )}
+        {step === 4 && (
+          <Button title={t('feedback.submit')} onPress={submit} loading={submitting} icon="send" style={{ flex: 2 }}
+            disabled={!facility || !visitDate || QUESTIONS.some(q => answers[q.id] == null)} />
         )}
       </View>
 
-      {/* Info Modal */}
-      <Modal
-        visible={infoModal.visible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setInfoModal({ visible: false, title: '', desc: '' })}
+      <InfoSheet
+        visible={!!info}
+        onClose={() => setInfo(null)}
+        icon="ribbon"
+        title={t('feedback.yourRight')}
+        closeLabel={t('common.gotIt')}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>{infoModal.title}</Text>
-            <Text style={styles.modalDesc}>{infoModal.desc}</Text>
-            <TouchableOpacity 
-              style={styles.modalClose}
-              onPress={() => setInfoModal({ visible: false, title: '', desc: '' })}
-            >
-              <Text style={styles.modalCloseText}>Close</Text>
-            </TouchableOpacity>
+        {info ? (
+          <>
+            <Txt variant="h3" color={colors.primaryDark}>{t(`questions.${info.id}.right`)}</Txt>
+            <Txt variant="body" color={colors.textSecondary} style={{ marginTop: space.sm }}>{t(`questions.${info.id}.explain`)}</Txt>
+          </>
+        ) : null}
+      </InfoSheet>
+    </KeyboardAvoidingView>
+  );
+}
+
+function StepHeading({ icon, title, subtitle }) {
+  return (
+    <View style={styles.stepHeading}>
+      <IconCircle icon={icon} size={44} />
+      <View style={{ flex: 1, marginLeft: space.md }}>
+        <Txt variant="h2" color={colors.primaryDark} accessibilityRole="header">{title}</Txt>
+        {subtitle ? <Txt variant="label" color={colors.textSecondary} style={{ fontWeight: '400' }}>{subtitle}</Txt> : null}
+      </View>
+    </View>
+  );
+}
+
+// SCR-006 / US-2.2: recent (3), type-ahead search grouped by district, manual entry
+function FacilityStep({ facility, onSelect }) {
+  const { t, settings } = useAppState();
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [recent, setRecent] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [manual, setManual] = useState(false);
+
+  useEffect(() => { storage.getRecentFacilities().then(setRecent); }, []);
+
+  useEffect(() => {
+    const q = query.trim();
+    setLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        // Before typing, show facilities in the user's home district (US-5.1)
+        const res = await FacilitiesAPI.list({ q: q || undefined, districtId: q ? undefined : settings.homeDistrict?.id, limit: 30 });
+        setResults(res.items);
+        setError(null);
+      } catch (err) {
+        setError(err.offline ? t('common.offline') : err.message);
+      } finally {
+        setLoading(false);
+      }
+    }, q ? 300 : 0);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const grouped = useMemo(() => {
+    const groups = {};
+    results.forEach(f => { (groups[f.district?.name || '—'] ||= []).push(f); });
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [results]);
+
+  return (
+    <View>
+      <StepHeading icon="business" title={t('feedback.facilityTitle')} subtitle={t('feedback.facilitySubtitle')} />
+
+      {facility && (
+        <Banner tone="success" icon="checkmark-circle" title={t('feedback.selected')} text={facility.name} style={{ marginBottom: space.md }} />
+      )}
+
+      {recent.length > 0 && (
+        <View style={{ marginBottom: space.md }}>
+          <Txt variant="label" color={colors.textSecondary} style={styles.groupLabel}>{t('feedback.recentFacilities')}</Txt>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+            {recent.map(f => (
+              <Chip key={f.id} icon="time" label={f.name} selected={facility?.id === f.id} onPress={() => onSelect(f)} />
+            ))}
           </View>
         </View>
-      </Modal>
+      )}
+
+      <SearchInput value={query} onChangeText={setQuery} placeholder={t('feedback.facilitySearch')} style={{ marginBottom: space.md }} />
+
+      {loading ? <SkeletonList count={2} /> : error ? (
+        <Banner tone="offline" text={error} />
+      ) : results.length === 0 ? (
+        <Txt variant="body" color={colors.textSecondary} style={{ textAlign: 'center', marginVertical: space.lg }}>
+          {query ? t('feedback.noFacilities', { query }) : t('feedback.typeToSearch')}
+        </Txt>
+      ) : grouped.map(([district, list]) => (
+        <View key={district}>
+          <Txt variant="label" color={colors.textSecondary} style={styles.groupLabel}>{district.toUpperCase()}</Txt>
+          {list.map(f => (
+            <FacilityCard key={f.id} facility={f} compact selectable selected={facility?.id === f.id} onPress={() => onSelect(f)} />
+          ))}
+        </View>
+      ))}
+
+      {manual ? (
+        <ManualFacility
+          initialName={query}
+          onCancel={() => setManual(false)}
+          onCreated={(f) => { setManual(false); onSelect(f); }}
+        />
+      ) : (
+        <Button variant="text" icon="add-circle" title={t('feedback.cantFind')} onPress={() => setManual(true)} style={{ marginTop: space.sm }} />
+      )}
     </View>
+  );
+}
+
+// "Can't find your facility? Enter manually" — saved unverified for admin review
+function ManualFacility({ initialName, onCancel, onCreated }) {
+  const { t, settings } = useAppState();
+  const [name, setName] = useState(initialName || '');
+  const [district, setDistrict] = useState(settings.homeDistrict);
+  const [type, setType] = useState(null);
+  const [districts, setDistricts] = useState([]);
+  const [sheet, setSheet] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { ReferenceAPI.districts().then(r => setDistricts(r.data)).catch(() => {}); }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      onCreated(await FacilitiesAPI.suggest({ name: name.trim(), districtId: district.id, type }));
+    } catch (err) {
+      Alert.alert(t('common.errorTitle'), err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card style={{ marginTop: space.md, borderWidth: 1, borderColor: colors.primaryMuted }}>
+      <Txt variant="h3" color={colors.primaryDark}>{t('feedback.manualTitle')}</Txt>
+      <Txt variant="label" color={colors.textSecondary} style={{ fontWeight: '400', marginBottom: space.md }}>{t('feedback.manualBody')}</Txt>
+      <TextInput
+        value={name}
+        onChangeText={setName}
+        placeholder={t('feedback.manualName')}
+        placeholderTextColor={colors.placeholder}
+        style={styles.input}
+        accessibilityLabel={t('feedback.manualName')}
+      />
+      <Pressable onPress={() => setSheet(true)} style={[styles.input, styles.selectInput]} accessibilityRole="button">
+        <Txt variant="body" color={district ? colors.text : colors.placeholder} style={{ flex: 1 }}>{district?.name || t('filters.district')}</Txt>
+        <Ionicons name="chevron-down" size={20} color={colors.neutral} />
+      </Pressable>
+      <Txt variant="label" color={colors.textSecondary} style={{ marginBottom: space.sm }}>{t('feedback.manualType')}</Txt>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+        {MANUAL_TYPES.map(ft => <Chip key={ft} label={t(`facilityTypes.${ft}`)} selected={type === ft} onPress={() => setType(ft)} />)}
+      </View>
+      <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.sm }}>
+        <Button title={t('common.cancel')} variant="secondary" onPress={onCancel} style={{ flex: 1 }} />
+        <Button title={t('feedback.manualSave')} onPress={save} loading={saving} disabled={name.trim().length < 3 || !district || !type} style={{ flex: 1 }} />
+      </View>
+      <SelectSheet
+        visible={sheet}
+        onClose={() => setSheet(false)}
+        title={t('filters.district')}
+        searchPlaceholder={t('filters.searchDistrict')}
+        options={districts.map(d => ({ value: d.id, label: d.name, group: t(`regions.${d.region}`) }))}
+        selected={district?.id}
+        onSelect={(id) => setDistrict({ id, name: districts.find(d => d.id === id)?.name })}
+      />
+    </Card>
+  );
+}
+
+// SCR-009: summary, optional comment, anonymity toggle
+function ReviewStep({ facility, visitDate, answers, comment, setComment, anonymous, setAnonymous, onEditQuestion, onEditStep }) {
+  const t = useAppState().t;
+  return (
+    <View>
+      <StepHeading icon="checkmark-done" title={t('feedback.reviewTitle')} subtitle={t('feedback.reviewSubtitle')} />
+
+      <Card style={{ paddingVertical: space.sm }}>
+        <SummaryRow icon="business" label={t('feedback.facility')} value={facility?.name} onEdit={() => onEditStep(1)} />
+        <SummaryRow icon="calendar" label={t('feedback.visitDate')} value={formatLongDate(visitDate)} onEdit={() => onEditStep(2)} />
+        {QUESTIONS.map((q, i) => {
+          const a = answers[q.id];
+          const tone = q.stars ? null : ANSWER_STYLE[answerTone(q, a)];
+          return (
+            <Pressable key={q.id} onPress={() => onEditQuestion(i)} style={styles.summaryQ} accessibilityRole="button">
+              <Txt variant="label" style={{ flex: 1, fontWeight: '400' }} numberOfLines={2}>{`Q${i + 1}. ${t(`questions.${q.id}.short`)}`}</Txt>
+              {a == null ? (
+                <Txt variant="caption" color={colors.dangerText} style={{ fontWeight: '700' }}>{t('feedback.unanswered')}</Txt>
+              ) : q.stars ? (
+                <View style={{ flexDirection: 'row' }}>
+                  {[1, 2, 3, 4, 5].map(n => <Ionicons key={n} name={a >= n ? 'star' : 'star-outline'} size={16} color={colors.amber} />)}
+                </View>
+              ) : (
+                <View style={[styles.answerPill, { backgroundColor: tone.bg }]}>
+                  <Ionicons name={ANSWER_ICON[a]} size={16} color={tone.fg} />
+                  <Txt variant="caption" color={tone.fg} style={{ marginLeft: 4, fontWeight: '700' }}>{t(`feedback.${a}`)}</Txt>
+                </View>
+              )}
+            </Pressable>
+          );
+        })}
+      </Card>
+
+      {answers.q4_unofficial_payment === 'yes' && (
+        <Banner tone="warning" icon="flag" title={t('feedback.escalateTitle')} text={t('feedback.escalateBody')} style={{ marginTop: space.md }} />
+      )}
+
+      <Txt variant="h3" color={colors.primaryDark} style={{ marginTop: space.xl, marginBottom: space.sm }}>{t('feedback.commentTitle')}</Txt>
+      <View>
+        <TextInput
+          value={comment}
+          onChangeText={setComment}
+          placeholder={t('feedback.commentPlaceholder')}
+          placeholderTextColor={colors.placeholder}
+          maxLength={COMMENT_MAX}
+          multiline
+          style={styles.textArea}
+          accessibilityLabel={t('feedback.commentTitle')}
+        />
+        <Txt variant="caption" color={comment.length > COMMENT_MAX - 50 ? colors.warningText : colors.textSecondary} style={styles.counter}>
+          {comment.length}/{COMMENT_MAX}
+        </Txt>
+      </View>
+
+      <Card style={[styles.anonCard, anonymous && { borderColor: colors.primary }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <IconCircle icon={anonymous ? 'eye-off' : 'receipt'} size={44} />
+          <View style={{ flex: 1, marginHorizontal: space.md }}>
+            <Txt variant="body" style={{ fontWeight: '700' }}>{t('feedback.anonymous')}</Txt>
+            <Txt variant="label" color={colors.textSecondary} style={{ fontWeight: '400' }}>{t('feedback.anonymousHelp')}</Txt>
+          </View>
+          <Switch
+            value={anonymous}
+            onValueChange={setAnonymous}
+            trackColor={{ true: colors.primary, false: colors.border }}
+            thumbColor={colors.white}
+            accessibilityLabel={t('feedback.anonymous')}
+          />
+        </View>
+        <Banner
+          tone={anonymous ? 'info' : 'success'}
+          icon={anonymous ? 'lock-closed' : 'receipt'}
+          text={anonymous ? t('feedback.anonymousOn') : t('feedback.anonymousOff')}
+          style={{ marginTop: space.md }}
+        />
+      </Card>
+    </View>
+  );
+}
+
+function SummaryRow({ icon, label, value, onEdit }) {
+  return (
+    <Pressable onPress={onEdit} style={styles.summaryRow} accessibilityRole="button" accessibilityLabel={`${label}: ${value}`}>
+      <Ionicons name={icon} size={20} color={colors.primary} />
+      <View style={{ flex: 1, marginLeft: space.md }}>
+        <Txt variant="caption" color={colors.textSecondary}>{label}</Txt>
+        <Txt variant="body" style={{ fontWeight: '600' }} numberOfLines={2}>{value}</Txt>
+      </View>
+      <Ionicons name="create-outline" size={20} color={colors.neutral} />
+    </Pressable>
+  );
+}
+
+// SCR-010: thank-you with check "burst", ticket + copy, what happens next
+function SuccessView({ result, anonymous, navigation }) {
+  const t = useAppState().t;
+  const insets = useSafeAreaInsets();
+  const pop = useRef(new Animated.Value(0)).current;
+  const burst = useRef(new Animated.Value(0)).current;
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.spring(pop, { toValue: 1, useNativeDriver: true, speed: 8, bounciness: 14 }),
+      Animated.timing(burst, { toValue: 1, duration: 900, useNativeDriver: true }),
+    ]).start();
+  }, []);
+
+  const copy = async () => {
+    await Clipboard.setStringAsync(result.ticket);
+    setCopied(true);
+  };
+
+  const steps = ['received', 'notified', 'action'];
+
+  return (
+    <ScrollView style={styles.container} contentContainerStyle={[styles.success, { paddingTop: insets.top + space.xxl, paddingBottom: insets.bottom + space.xl }]}>
+      <View style={styles.burstWrap}>
+        {Array.from({ length: 10 }, (_, i) => {
+          const angle = (i / 10) * 2 * Math.PI;
+          return (
+            <Animated.View
+              key={i}
+              style={[styles.particle, {
+                backgroundColor: i % 2 ? colors.amber : colors.primary,
+                opacity: burst.interpolate({ inputRange: [0, 0.3, 1], outputRange: [0, 1, 0] }),
+                transform: [
+                  { translateX: burst.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(angle) * 90] }) },
+                  { translateY: burst.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(angle) * 90] }) },
+                ],
+              }]}
+            />
+          );
+        })}
+        <Animated.View style={[styles.checkCircle, { transform: [{ scale: pop }] }]}>
+          <Ionicons name={result.queued ? 'cloud-upload' : 'checkmark'} size={64} color={colors.white} />
+        </Animated.View>
+      </View>
+
+      <Txt variant="h1" color={colors.primaryDark} style={styles.centerText} accessibilityRole="header">
+        {result.queued ? t('feedback.queuedTitle') : t('feedback.thankYou')}
+      </Txt>
+      <Txt variant="bodyLg" color={colors.textSecondary} style={[styles.centerText, { marginTop: space.sm }]}>
+        {result.queued ? t('feedback.queuedBody') : t('feedback.thankYouBody')}
+      </Txt>
+
+      {result.ticket ? (
+        <Card style={styles.ticketCard}>
+          <Txt variant="label" color={colors.textSecondary}>{t('feedback.yourTicket')}</Txt>
+          <Txt style={styles.ticketNumber} selectable>{result.ticket}</Txt>
+          <Button title={copied ? t('feedback.copied') : t('feedback.copyTicket')} icon={copied ? 'checkmark' : 'copy-outline'} variant="secondary" onPress={copy} />
+          <Txt variant="caption" color={colors.textSecondary} style={{ marginTop: space.sm, textAlign: 'center' }}>{t('feedback.saveTicket')}</Txt>
+        </Card>
+      ) : !result.queued && anonymous ? (
+        <Banner tone="info" icon="lock-closed" text={t('feedback.anonymousDone')} style={{ marginTop: space.xl, alignSelf: 'stretch' }} />
+      ) : null}
+
+      {result.escalated ? (
+        <Banner tone="warning" icon="flag" title={t('feedback.escalateTitle')} text={t('feedback.escalatedDone')} style={{ marginTop: space.md, alignSelf: 'stretch' }} />
+      ) : null}
+
+      <Card style={styles.nextCard}>
+        <Txt variant="h3" color={colors.primaryDark} style={{ marginBottom: space.md }}>{t('feedback.whatsNext')}</Txt>
+        {steps.map((key, i) => (
+          <View key={key} style={styles.nextRow}>
+            <View style={styles.nextNum}><Txt variant="label" color={colors.white} style={{ fontWeight: '700' }}>{i + 1}</Txt></View>
+            <Txt variant="body" style={{ flex: 1 }}>{t(`feedback.next.${key}`)}</Txt>
+          </View>
+        ))}
+      </Card>
+
+      {result.ticket ? (
+        <Button title={t('feedback.trackThis')} icon="receipt" variant="secondary" size="lg"
+          onPress={() => navigation.replace('ComplaintDetail', { ticket: result.ticket })} style={styles.fullBtn} />
+      ) : null}
+      <Button title={t('feedback.returnHome')} icon="home" size="lg" onPress={() => navigation.navigate('Tabs', { screen: 'Home' })} style={styles.fullBtn} />
+    </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    backgroundColor: colors.primary.dark,
-    paddingTop: 50,
-    paddingBottom: 16,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  headerTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
-  exitText: { color: 'rgba(255,255,255,0.9)', fontSize: 14 },
-  
-  progressContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 8,
-    padding: 16,
-    backgroundColor: colors.card,
-  },
-  progressDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: colors.gray[300],
-  },
-  progressDotActive: {
-    width: 24,
-    borderRadius: 5,
-    backgroundColor: colors.primary.teal,
-  },
-  progressDotDone: {
-    backgroundColor: colors.primary.teal,
-  },
-  stepIndicator: {
-    textAlign: 'center',
-    fontSize: 12,
-    color: colors.neutral,
-    marginBottom: 8,
-  },
-  
-  content: { flex: 1, paddingHorizontal: 16 },
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  
-  stepTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: colors.primary.dark,
-    marginBottom: 16,
-  },
-  
-  searchBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.gray[50],
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-  },
-  searchIcon: { marginRight: 12 },
-  searchInput: {
-    flex: 1,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: colors.text,
-  },
-  
-  section: { marginBottom: 16 },
-  sectionLabel: {
-    fontSize: 13,
-    color: colors.neutral,
-    fontWeight: '600',
-    marginBottom: 8,
-    textTransform: 'uppercase',
-  },
-  
-  facilityOption: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: colors.gray[50],
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-  },
-  facilityOptionSelected: {
-    backgroundColor: colors.primary.light,
-    borderColor: colors.primary.teal,
-  },
-  facilityName: { fontSize: 15, fontWeight: '600', color: colors.text },
-  facilitySub: { fontSize: 12, color: colors.neutral, marginTop: 2 },
-  
-  manualBtn: { padding: 12, alignItems: 'center' },
-  manualText: { color: colors.primary.teal, fontWeight: '600', fontSize: 14 },
-  emptyText: { color: colors.neutral, fontStyle: 'italic', textAlign: 'center', padding: 16 },
-  
-  quickDates: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  quickDateBtn: {
-    flex: 1,
-    backgroundColor: colors.gray[100],
-    padding: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  quickDateBtnActive: {
-    backgroundColor: colors.primary.light,
-    borderColor: colors.primary.teal,
-  },
-  quickDateText: { fontSize: 13, fontWeight: '500', color: colors.text },
-  quickDateTextActive: { color: colors.primary.teal, fontWeight: '700' },
-  
-  dateHint: { fontSize: 12, color: colors.danger, marginTop: 10 },
-  
-  infoBox: {
-    backgroundColor: colors.gray[50],
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 16,
-  },
-  infoText: { fontSize: 13, color: colors.neutral },
-  
-  questionCard: {
-    backgroundColor: colors.card,
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.gray[100],
-  },
-  questionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 12,
-  },
-  questionText: { fontSize: 15, fontWeight: '500', color: colors.text, flex: 1, marginRight: 8 },
-  
-  answerOptions: { marginTop: 8 },
-  starRow: { flexDirection: 'row', justifyContent: 'center', gap: 8 },
-  star: {
-    width: 40,
-    height: 40,
-    borderRadius: 8,
-    backgroundColor: colors.gray[100],
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  starActive: { backgroundColor: colors.warning },
-  starText: { fontSize: 20, color: colors.warning },
-  starTextActive: { fontSize: 20, color: '#fff' },
-  
-  btnRow: { flexDirection: 'row', gap: 8 },
+  content: { padding: space.lg, paddingBottom: space.xxl },
+  footer: { flexDirection: 'row', gap: space.md, paddingHorizontal: space.lg, paddingTop: space.md, backgroundColor: colors.card, borderTopWidth: 1, borderTopColor: colors.border },
+  stepHeading: { flexDirection: 'row', alignItems: 'center', marginBottom: space.lg },
+  groupLabel: { fontWeight: '700', marginBottom: space.sm, marginTop: space.xs, letterSpacing: 0.5 },
+  quickRow: { flexDirection: 'row', marginBottom: space.sm },
+  quickChip: { flex: 1, justifyContent: 'center', minHeight: touch.min },
+  qCounterRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: space.md },
+  qDots: { flexDirection: 'row', gap: 6 },
+  qDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.border },
+  qDotDone: { backgroundColor: colors.primaryMuted },
+  qDotActive: { width: 24, backgroundColor: colors.primary },
+  questionCard: { padding: space.xl, borderRadius: radius.lg, ...shadow.raised },
+  questionTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  questionText: { marginTop: space.lg, fontWeight: '600', fontSize: 20, lineHeight: 28 },
   answerBtn: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: colors.gray[100],
-    alignItems: 'center',
-  },
-  answerBtnActive: { backgroundColor: colors.primary.teal },
-  answerText: { color: colors.text, fontWeight: '600' },
-  answerTextActive: { color: '#fff', fontWeight: '600' },
-  
-  textAreaWrap: { position: 'relative', marginBottom: 16 },
-  textArea: {
-    backgroundColor: colors.gray[50],
-    padding: 14,
-    borderRadius: 12,
-    height: 100,
-    textAlignVertical: 'top',
-    fontSize: 14,
-    color: colors.text,
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-  },
-  charCount: {
-    position: 'absolute',
-    bottom: 8,
-    right: 12,
-    fontSize: 12,
-    color: colors.neutral,
-  },
-  
-  anonToggle: {
+    minHeight: touch.large,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: colors.gray[50],
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 24,
+    paddingHorizontal: space.lg,
+    borderRadius: radius.md,
+    borderWidth: 2,
+    marginBottom: space.md,
+  },
+  input: {
+    minHeight: touch.large,
     borderWidth: 1,
-    borderColor: colors.gray[200],
-  },
-  toggleTrack: {
-    width: 44,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: colors.gray[300],
-    padding: 2,
-    marginRight: 12,
-  },
-  toggleTrackActive: { backgroundColor: colors.success },
-  toggleDot: {
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: '#fff',
-  },
-  toggleDotActive: { transform: [{ translateX: 20 }] },
-  anonInfo: { flex: 1 },
-  anonTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
-  anonDesc: { fontSize: 13, color: colors.neutral, marginTop: 4 },
-  
-  submitBtn: {
-    backgroundColor: colors.primary.teal,
-    padding: 16,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  submitBtnDisabled: { backgroundColor: colors.gray[300] },
-  submitText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  
-  navButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    padding: 16,
-    backgroundColor: colors.card,
-    borderTopWidth: 1,
-    borderTopColor: colors.gray[200],
-  },
-  prevBtn: {
-    flex: 1,
-    padding: 14,
-    marginRight: 8,
-    backgroundColor: colors.gray[100],
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  prevText: { color: colors.text, fontWeight: '600', fontSize: 15 },
-  nextBtn: {
-    flex: 1,
-    padding: 14,
-    marginLeft: 8,
-    backgroundColor: colors.primary.teal,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  nextBtnDisabled: { backgroundColor: colors.gray[300] },
-  nextText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
-  
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalBox: {
-    backgroundColor: colors.card,
-    padding: 20,
-    borderRadius: 12,
-    maxWidth: 300,
-    width: '100%',
-  },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', color: colors.primary.dark, marginBottom: 8 },
-  modalDesc: { fontSize: 14, color: colors.neutral, marginBottom: 16, lineHeight: 20 },
-  modalClose: {
-    backgroundColor: colors.primary.teal,
-    padding: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalCloseText: { color: '#fff', fontWeight: '600' },
-  
-  successContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-    backgroundColor: colors.bg,
-  },
-  checkCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(22, 163, 74, 0.1)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 24,
-  },
-  successTitle: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: colors.primary.dark,
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  successDesc: {
+    borderColor: colors.inputBorder,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.md,
     fontSize: 16,
-    color: colors.neutral,
-    textAlign: 'center',
-    marginBottom: 32,
-    lineHeight: 22,
-  },
-  ticketBox: {
+    color: colors.text,
+    marginBottom: space.md,
     backgroundColor: colors.card,
-    padding: 20,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginBottom: 24,
-    width: '100%',
-    maxWidth: 320,
+  },
+  selectInput: { flexDirection: 'row', alignItems: 'center' },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: space.md, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  summaryQ: { flexDirection: 'row', alignItems: 'center', minHeight: touch.min, paddingVertical: space.sm, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+  answerPill: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.sm, paddingVertical: 4, borderRadius: radius.pill, marginLeft: space.sm },
+  textArea: {
+    minHeight: 120,
     borderWidth: 1,
-    borderColor: colors.gray[200],
+    borderColor: colors.inputBorder,
+    borderRadius: radius.sm,
+    padding: space.md,
+    paddingBottom: space.xl,
+    fontSize: 16,
+    color: colors.text,
+    textAlignVertical: 'top',
+    backgroundColor: colors.card,
   },
-  ticketLabel: { fontSize: 14, color: colors.neutral, marginBottom: 4 },
-  ticketNum: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: colors.primary.teal,
-    fontFamily: 'monospace',
-    marginBottom: 12,
-  },
-  copyBtn: {
-    backgroundColor: colors.primary.light,
-    padding: 10,
-    borderRadius: 8,
-    width: '100%',
-    alignItems: 'center',
-  },
-  copyText: { fontWeight: '600', color: colors.primary.teal },
-  
-  nextSteps: {
-    backgroundColor: colors.primary.light,
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 32,
-    width: '100%',
-    maxWidth: 320,
-  },
-  nextStepsTitle: { fontWeight: 'bold', color: colors.primary.dark, marginBottom: 8 },
-  nextStepsText: { fontSize: 14, color: colors.neutral, marginBottom: 4 },
-  
-  homeBtn: {
-    backgroundColor: colors.primary.dark,
-    padding: 16,
-    borderRadius: 12,
-    width: '100%',
-    maxWidth: 320,
-    alignItems: 'center',
-  },
-  homeText: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  counter: { position: 'absolute', right: space.md, bottom: space.sm },
+  anonCard: { marginTop: space.xl, borderWidth: 2, borderColor: colors.border },
+  success: { alignItems: 'center', paddingHorizontal: space.lg },
+  burstWrap: { width: 200, height: 200, alignItems: 'center', justifyContent: 'center', marginBottom: space.lg },
+  particle: { position: 'absolute', width: 12, height: 12, borderRadius: 6 },
+  checkCircle: { width: 120, height: 120, borderRadius: 60, backgroundColor: colors.success, alignItems: 'center', justifyContent: 'center', ...shadow.raised },
+  centerText: { textAlign: 'center' },
+  ticketCard: { alignSelf: 'stretch', alignItems: 'center', marginTop: space.xl, borderWidth: 2, borderColor: colors.primary, borderStyle: 'dashed' },
+  ticketNumber: { fontSize: 26, fontWeight: '800', color: colors.primaryDark, letterSpacing: 1.5, marginVertical: space.md, fontFamily: Platform.select({ android: 'monospace', ios: 'Menlo' }) },
+  nextCard: { alignSelf: 'stretch', marginTop: space.xl, backgroundColor: colors.primaryLight },
+  nextRow: { flexDirection: 'row', alignItems: 'center', marginBottom: space.md },
+  nextNum: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginRight: space.md },
+  fullBtn: { alignSelf: 'stretch', marginTop: space.md },
 });

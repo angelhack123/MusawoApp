@@ -1,268 +1,191 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+// SCR-003: hub with two equally prominent actions + closed-loop updates.
+import React, { useCallback, useState } from 'react';
+import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../theme/colors';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { colors, radius, space } from '../theme';
+import { useAppState } from '../state/AppState';
+import { storage } from '../utils/storage';
+import { flushFeedbackQueue, syncMyTickets } from '../api/musawo';
+import { Decor } from '../components/AppBar';
+import { Banner, Card, Chip, IconButton, IconCircle, PressableScale, SectionTitle, Txt } from '../components/ui';
+
+function ActionCard({ icon, iconBg, title, subtitle, onPress, accent }) {
+  return (
+    <Card onPress={onPress} accent={accent} style={styles.action} accessibilityLabel={title}>
+      <IconCircle icon={icon} size={64} iconSize={36} bg={iconBg} color={accent} />
+      <View style={{ flex: 1, marginLeft: space.lg }}>
+        <Txt variant="h2" color={colors.primaryDark}>{title}</Txt>
+        <Txt variant="body" color={colors.textSecondary} style={{ marginTop: 2 }}>{subtitle}</Txt>
+      </View>
+      <View style={[styles.go, { backgroundColor: accent }]}>
+        <Ionicons name="arrow-forward" size={20} color={colors.white} />
+      </View>
+    </Card>
+  );
+}
+
+function Tile({ icon, label, onPress, color, bg, badge }) {
+  return (
+    <PressableScale onPress={onPress} style={styles.tile} accessibilityRole="button" accessibilityLabel={label}>
+      <IconCircle icon={icon} size={44} color={color} bg={bg} />
+      <Txt variant="label" style={styles.tileLabel} numberOfLines={2}>{label}</Txt>
+      {badge ? <View style={styles.tileBadge}><Txt variant="caption" color={colors.white} style={{ fontWeight: '700' }}>{badge}</Txt></View> : null}
+    </PressableScale>
+  );
+}
 
 export default function HomeScreen({ navigation }) {
-  const [recentSearches, setRecentSearches] = useState([]);
+  const { t, settings } = useAppState();
+  const insets = useSafeAreaInsets();
+  const [recent, setRecent] = useState([]);
+  const [updated, setUpdated] = useState([]);
+  const [queued, setQueued] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    loadRecentSearches();
+  const load = useCallback(async () => {
+    const [history] = await Promise.all([storage.getSearchHistory(), flushFeedbackQueue()]);
+    setRecent(history.slice(0, 3));
+    setQueued((await storage.getFeedbackQueue()).length);
+    const sync = await syncMyTickets();
+    setUpdated(sync.updated);
   }, []);
 
-  const loadRecentSearches = async () => {
-    try {
-      const stored = await AsyncStorage.getItem('searchHistory');
-      if (stored) setRecentSearches(JSON.parse(stored));
-    } catch (error) {}
-  };
+  useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const clearHistory = async () => {
-    await AsyncStorage.removeItem('searchHistory');
-    setRecentSearches([]);
+  const refresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
   };
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      <View style={styles.header}>
-        <View style={styles.headerTop}>
-          <Ionicons name="information-circle" size={28} color={colors.primary.teal} />
-          <Text style={styles.headerTitle}>MUSAWO</Text>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={{ paddingBottom: space.xxl }}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={colors.white} colors={[colors.primary]} />}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={[styles.hero, { paddingTop: insets.top + space.sm }]}>
+        <Decor variant="hero" />
+        <View style={styles.appBar}>
+          <View style={styles.logo}><Ionicons name="shield-checkmark" size={22} color={colors.primary} /></View>
+          <Txt variant="h3" color={colors.white} style={styles.wordmark}>MUSAWO</Txt>
+          <View style={{ flex: 1 }} />
+          <IconButton icon="settings-outline" onPress={() => navigation.navigate('Settings')} label={t('settings.title')} />
         </View>
-        <Text style={styles.headerSubtitle}>Home</Text>
+        <Txt variant="h1" color={colors.white} style={{ marginTop: space.lg }} accessibilityRole="header">{t('home.greeting')}</Txt>
+        <Txt variant="body" color="rgba(255,255,255,0.85)" style={{ marginTop: 4 }}>{t('home.prompt')}</Txt>
       </View>
 
-      <View style={styles.content}>
-        {/* Welcome Card */}
-        <View style={styles.welcomeCard}>
-          <Text style={styles.welcomeTitle}>Welcome to Musawo</Text>
-          <Text style={styles.welcomeText}>
-            Empowering patients with verified information and a secure voice.
-          </Text>
-          <View style={styles.welcomeButtons}>
-            <TouchableOpacity 
-              style={[styles.welcomeBtn, styles.welcomeBtnPrimary]}
-              onPress={() => navigation.navigate('Verify')}
-            >
-              <Text style={styles.welcomeBtnPrimaryText}>Verify Doctor</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={[styles.welcomeBtn, styles.welcomeBtnSecondary]}
-              onPress={() => navigation.navigate('Feedback')}
-            >
-              <Text style={styles.welcomeBtnSecondaryText}>Give Feedback</Text>
-            </TouchableOpacity>
-          </View>
+      <View style={styles.body}>
+        <ActionCard
+          icon="shield-checkmark"
+          iconBg={colors.primaryLight}
+          accent={colors.primary}
+          title={t('home.verifyTitle')}
+          subtitle={t('home.verifySubtitle')}
+          onPress={() => navigation.navigate('Verify')}
+        />
+        <ActionCard
+          icon="chatbubble-ellipses"
+          iconBg={colors.successBg}
+          accent={colors.success}
+          title={t('home.feedbackTitle')}
+          subtitle={t('home.feedbackSubtitle')}
+          onPress={() => navigation.navigate('Feedback')}
+        />
+
+        {updated.length > 0 && (
+          <Banner
+            tone="success"
+            icon="notifications"
+            title={t('home.updatesTitle', { count: updated.length })}
+            text={t('home.updatesBody')}
+            onPress={() => updated.length === 1
+              ? navigation.navigate('ComplaintDetail', { ticket: updated[0].ticket_number })
+              : navigation.navigate('Track')}
+            style={styles.banner}
+          />
+        )}
+        {queued > 0 && (
+          <Banner tone="offline" title={t('home.queuedTitle', { count: queued })} text={t('home.queuedBody')} style={styles.banner} />
+        )}
+
+        <View style={styles.tiles}>
+          <Tile icon="receipt" label={t('home.trackLink')} color={colors.info} bg={colors.infoBg}
+            onPress={() => navigation.navigate('Track')} badge={updated.length || null} />
+          <Tile icon="business" label={t('home.facilitiesLink')} color={colors.success} bg={colors.successBg}
+            onPress={() => navigation.navigate('Facilities')} />
+          <Tile icon="ribbon" label={t('home.rightsLink')} color="#B45309" bg={colors.warningBg}
+            onPress={() => navigation.navigate('PatientRights')} />
         </View>
 
-        {/* Quick Actions */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Quick Actions</Text>
-          <View style={styles.quickActions}>
-            <TouchableOpacity 
-              style={styles.quickAction}
-              onPress={() => navigation.navigate('Track')}
-            >
-              <View style={[styles.quickActionIcon, { backgroundColor: '#DBEAFE' }]}>
-                <Ionicons name="list" size={20} color="#2563EB" />
-              </View>
-              <Text style={styles.quickActionText}>Track Ticket</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.quickAction}>
-              <View style={[styles.quickActionIcon, { backgroundColor: '#D1FAE5' }]}>
-                <Ionicons name="location" size={20} color="#059669" />
-              </View>
-              <Text style={styles.quickActionText}>Find Facility</Text>
-            </TouchableOpacity>
+        {recent.length > 0 && (
+          <View style={{ marginTop: space.xl }}>
+            <SectionTitle title={t('home.recentSearches')} />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {recent.map(item => (
+                <Chip
+                  key={item.term}
+                  icon={item.mode === 'reg' ? 'card' : 'time'}
+                  label={item.term}
+                  onPress={() => navigation.navigate('Verify', { query: item.term, mode: item.mode, at: Date.now() })}
+                />
+              ))}
+            </ScrollView>
           </View>
-        </View>
+        )}
 
-        {/* Recent Searches */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Recent Searches</Text>
-            {recentSearches.length > 0 && (
-              <TouchableOpacity onPress={clearHistory}>
-                <Text style={styles.clearText}>Clear</Text>
-              </TouchableOpacity>
-            )}
+        <Card style={styles.rightsCard} onPress={() => navigation.navigate('PatientRights')}>
+          <View style={{ flex: 1 }}>
+            <Txt variant="label" color={colors.primaryMuted} style={{ fontWeight: '700', letterSpacing: 1 }}>{t('home.didYouKnow')}</Txt>
+            <Txt variant="h3" color={colors.white} style={{ marginTop: 4 }}>{t('home.rightTeaser')}</Txt>
+            <Txt variant="label" color="rgba(255,255,255,0.85)" style={{ marginTop: space.sm, fontWeight: '600' }}>
+              {t('home.learnRights')} →
+            </Txt>
           </View>
-          <View style={styles.chipContainer}>
-            {recentSearches.length === 0 ? (
-              <Text style={styles.emptyText}>No recent searches</Text>
-            ) : (
-              recentSearches.map((term, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.chip}
-                  onPress={() => navigation.navigate('Verify', { searchQuery: term })}
-                >
-                  <Text style={styles.chipText}>{term}</Text>
-                </TouchableOpacity>
-              ))
-            )}
-          </View>
-        </View>
+          <Ionicons name="hand-left" size={56} color="rgba(255,255,255,0.18)" />
+        </Card>
+
+        {settings.lang === 'lg' && (
+          <Banner tone="info" icon="language" text={t('settings.luganda.pending')} style={styles.banner} />
+        )}
       </View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.bg,
+  container: { flex: 1, backgroundColor: colors.bg },
+  hero: {
+    backgroundColor: colors.primaryDark,
+    paddingHorizontal: space.lg,
+    paddingBottom: 72,
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    overflow: 'hidden',
   },
-  header: {
-    backgroundColor: colors.primary.dark,
-    paddingTop: 50,
-    paddingBottom: 16,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  headerTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  headerTitle: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  headerSubtitle: {
-    color: 'rgba(255,255,255,0.9)',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 100,
-  },
-  welcomeCard: {
-    backgroundColor: colors.primary.teal,
-    borderRadius: 16,
-    padding: 24,
-    marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  welcomeTitle: {
-    color: '#fff',
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  welcomeText: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 14,
-    marginBottom: 16,
-  },
-  welcomeButtons: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 16,
-  },
-  welcomeBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  welcomeBtnPrimary: {
-    backgroundColor: '#fff',
-  },
-  welcomeBtnPrimaryText: {
-    color: colors.primary.teal,
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  welcomeBtnSecondary: {
-    backgroundColor: 'rgba(255,255,255,0.3)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  welcomeBtnSecondaryText: {
-    color: '#fff',
-    fontWeight: '600',
-    fontSize: 15,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: colors.primary.dark,
-  },
-  clearText: {
-    fontSize: 12,
-    color: colors.neutral,
-    textDecorationLine: 'underline',
-  },
-  quickActions: {
-    flexDirection: 'row',
-    gap: 16,
-  },
-  quickAction: {
+  appBar: { flexDirection: 'row', alignItems: 'center', minHeight: 48 },
+  logo: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.white, alignItems: 'center', justifyContent: 'center' },
+  wordmark: { marginLeft: space.sm, letterSpacing: 3 },
+  body: { paddingHorizontal: space.lg, marginTop: -52 },
+  action: { minHeight: 140, flexDirection: 'row', alignItems: 'center', marginBottom: space.lg, borderRadius: radius.lg },
+  go: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  banner: { marginBottom: space.lg },
+  tiles: { flexDirection: 'row', gap: space.md },
+  tile: {
     flex: 1,
     backgroundColor: colors.card,
-    padding: 16,
-    borderRadius: 12,
+    borderRadius: radius.md,
+    padding: space.md,
     alignItems: 'center',
+    minHeight: 112,
     borderWidth: 1,
-    borderColor: colors.gray[100],
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    borderColor: colors.border,
   },
-  quickActionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  quickActionText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: colors.text,
-  },
-  chipContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  chip: {
-    backgroundColor: colors.card,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-  },
-  chipText: {
-    fontSize: 14,
-    color: colors.text,
-  },
-  emptyText: {
-    color: colors.neutral,
-    fontStyle: 'italic',
-    fontSize: 14,
-  },
+  tileLabel: { marginTop: space.sm, textAlign: 'center', fontWeight: '600' },
+  tileBadge: { position: 'absolute', top: 8, right: 8, minWidth: 22, height: 22, borderRadius: 11, backgroundColor: colors.amber, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  rightsCard: { marginTop: space.xl, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', borderRadius: radius.lg, marginBottom: space.lg },
 });

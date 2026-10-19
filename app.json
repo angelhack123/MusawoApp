@@ -11,23 +11,26 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#0D4F4F"
     },
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "package": "ug.musawo.mobile",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "plugins": [
-      "@react-native-community/datetimepicker"
-    ]
+    "plugins": [],
+    "extra": {
+      "eas": {
+        "projectId": "7a993a01-34d3-4b62-8bd6-0164367ec1e9"
+      }
+    }
   }
 }

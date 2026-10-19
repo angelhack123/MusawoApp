@@ -1,283 +1,176 @@
-import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, Alert, ActivityIndicator } from 'react-native';
+// SCR-011: look up a ticket (US-3.1), "My Complaints" (US-3.4), recently tracked tickets.
+import React, { useCallback, useState } from 'react';
+import { Keyboard, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../theme/colors';
-import { api } from '../api/client';
+import { colors, radius, space, touch } from '../theme';
+import { useAppState } from '../state/AppState';
+import { FeedbackAPI, flushFeedbackQueue, syncMyTickets } from '../api/musawo';
+import { storage } from '../utils/storage';
+import { feedbackStatus } from '../utils/status';
+import { formatDate } from '../utils/format';
+import { TICKET_RE } from '../config';
+import AppBar from '../components/AppBar';
+import SearchInput from '../components/SearchInput';
+import EmptyState from '../components/EmptyState';
+import { Banner, Button, Card, SectionTitle, Txt } from '../components/ui';
 
-export default function TrackScreen() {
-  const [ticketInput, setTicketInput] = useState('');
-  const [activeComplaint, setActiveComplaint] = useState(null);
-  const [loading, setLoading] = useState(false);
+// Accept "msw2026000123" or "MSW-2026-000123"
+const normaliseTicket = (raw) => {
+  const clean = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const m = /^MSW(\d{4})(\d{6})$/.exec(clean);
+  return m ? `MSW-${m[1]}-${m[2]}` : raw.trim().toUpperCase();
+};
 
-  const trackTicket = async () => {
-    const ticket = ticketInput.trim().toUpperCase();
-    if (!ticket.match(/^MSW-\d{4}-\d{6}$/)) {
-      Alert.alert('Invalid Format', 'Use format: MSW-YYYY-NNNNNN');
+export function StatusPill({ status }) {
+  const t = useAppState().t;
+  const s = feedbackStatus(status);
+  return (
+    <View style={[styles.pill, { backgroundColor: s.bg }]}>
+      <Ionicons name={s.icon} size={14} color={s.color} />
+      <Txt variant="caption" color={s.color} style={{ marginLeft: 4, fontWeight: '700' }}>{t(`feedbackStatus.${s.key}`)}</Txt>
+    </View>
+  );
+}
+
+function TicketRow({ ticket, onPress, updated }) {
+  const t = useAppState().t;
+  return (
+    <Card onPress={onPress} style={styles.ticketRow} accessibilityLabel={ticket.ticket_number}>
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <Txt variant="body" style={styles.mono}>{ticket.ticket_number}</Txt>
+          {updated ? <View style={styles.newDot}><Txt variant="caption" color={colors.white} style={{ fontWeight: '700' }}>{t('track.updated')}</Txt></View> : null}
+        </View>
+        <Txt variant="label" color={colors.textSecondary} numberOfLines={1} style={{ fontWeight: '400', marginTop: 2 }}>
+          {[ticket.facility?.name, formatDate(ticket.submitted_at || ticket.at)].filter(Boolean).join(' • ')}
+        </Txt>
+      </View>
+      {ticket.status ? <StatusPill status={ticket.status} /> : null}
+      <Ionicons name="chevron-forward" size={20} color={colors.placeholder} style={{ marginLeft: space.sm }} />
+    </Card>
+  );
+}
+
+export default function TrackScreen({ navigation }) {
+  const t = useAppState().t;
+  const [input, setInput] = useState('');
+  const [error, setError] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [mine, setMine] = useState([]);
+  const [tracked, setTracked] = useState([]);
+  const [queued, setQueued] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    await flushFeedbackQueue();
+    const [{ tickets }, recent, queue] = await Promise.all([syncMyTickets(), storage.getTrackedTickets(), storage.getFeedbackQueue()]);
+    setMine(tickets);
+    setTracked(recent.filter(r => !tickets.some(m => m.ticket_number === r.ticket_number)));
+    setQueued(queue.length);
+  }, []);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  const check = async () => {
+    Keyboard.dismiss();
+    const ticket = normaliseTicket(input);
+    if (!TICKET_RE.test(ticket)) {
+      setError(t('track.invalid'));
       return;
     }
-    setLoading(true);
+    setError(null);
+    setChecking(true);
     try {
-      const res = await api.get(`/feedback/?ticket_number=${ticket}`);
-      const data = res.data.results?.[0] ?? (Array.isArray(res.data) ? res.data[0] : res.data);
-      if (data) {
-        setActiveComplaint(data);
-      } else {
-        Alert.alert('Not Found', 'Ticket not found. Check number and try again.');
-        setActiveComplaint(null);
+      const data = await FeedbackAPI.track(ticket);
+      if (!data) {
+        setError(t('track.notFound'));
+        return;
       }
-    } catch {
-      Alert.alert('Error', 'Failed to track complaint.');
+      await storage.addTrackedTicket({ ticket_number: data.ticket_number, status: data.status, facility: data.facility, submitted_at: data.submitted_at });
+      setInput('');
+      navigation.navigate('ComplaintDetail', { ticket: data.ticket_number, data });
+    } catch (err) {
+      setError(err.offline ? t('common.offline') : err.message);
     } finally {
-      setLoading(false);
+      setChecking(false);
     }
   };
 
-  const getStatusStyle = (status) => {
-    switch (status) {
-      case 'RESOLVED': return { bg: '#DCFCE7', text: colors.success, border: '#86EFAC' };
-      case 'UNDER_REVIEW': return { bg: '#DBEAFE', text: '#2563EB', border: '#93C5FD' };
-      case 'ESCALATED': return { bg: '#FEF3C7', text: '#D97706', border: '#FCD34D' };
-      default: return { bg: colors.gray[100], text: colors.neutral, border: colors.gray[300] };
-    }
-  };
-
-  const getStatusLabel = (status) => (status || '').replace(/_/g, ' ');
+  const refresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Track Complaint</Text>
-      </View>
+    <View style={styles.container}>
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: space.xxl }}
+        keyboardShouldPersistTaps="handled"
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} colors={[colors.primary]} />}
+      >
+        <AppBar title={t('track.title')} subtitle={t('track.subtitle')}>
+          <SearchInput
+            value={input}
+            onChangeText={(v) => { setInput(v.toUpperCase()); setError(null); }}
+            placeholder={t('track.placeholder')}
+            icon="receipt-outline"
+            autoCapitalize="characters"
+            maxLength={18}
+            onSubmitEditing={check}
+            error={error}
+            style={{ marginTop: space.md }}
+          />
+          <Button title={t('track.check')} onPress={check} loading={checking} disabled={!input.trim()} variant="secondary" icon="search" size="lg" style={{ marginTop: space.md, borderColor: colors.white }} />
+        </AppBar>
 
-      <View style={styles.content}>
-        {/* Search Card */}
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Track Complaint</Text>
-          <View style={styles.inputBox}>
-            <Ionicons name="ticket" size={20} color={colors.neutral} style={styles.inputIcon} />
-            <TextInput
-              style={styles.ticketInput}
-              placeholder="MSW-YYYY-NNNNNN"
-              value={ticketInput}
-              onChangeText={(text) => setTicketInput(text.toUpperCase())}
-              placeholderTextColor={colors.neutral}
-              maxLength={18}
-              autoCapitalize="characters"
+        <View style={styles.body}>
+          {queued > 0 && <Banner tone="offline" title={t('home.queuedTitle', { count: queued })} text={t('home.queuedBody')} style={{ marginBottom: space.lg }} />}
+
+          <SectionTitle title={t('track.myComplaints')} />
+          {mine.length === 0 ? (
+            <Card style={{ padding: 0 }}>
+              <EmptyState icon="file-tray" title={t('track.noneTitle')} message={t('track.none')} actionLabel={t('home.feedbackTitle')} onAction={() => navigation.navigate('Feedback')} />
+            </Card>
+          ) : mine.map(ticket => (
+            <TicketRow
+              key={ticket.ticket_number}
+              ticket={ticket}
+              updated={ticket.lastSeenStatus && ticket.lastSeenStatus !== ticket.status}
+              onPress={() => navigation.navigate('ComplaintDetail', { ticket: ticket.ticket_number })}
             />
-          </View>
-          <TouchableOpacity style={styles.trackBtn} onPress={trackTicket} disabled={loading}>
-            {loading
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.trackBtnText}>Check Status</Text>
-            }
-          </TouchableOpacity>
+          ))}
+
+          {tracked.length > 0 && (
+            <View style={{ marginTop: space.xl }}>
+              <SectionTitle title={t('track.recentlyTracked')} />
+              {tracked.map(ticket => (
+                <TicketRow key={ticket.ticket_number} ticket={ticket}
+                  onPress={() => navigation.navigate('ComplaintDetail', { ticket: ticket.ticket_number })} />
+              ))}
+            </View>
+          )}
+
+          <Card style={styles.howCard}>
+            <Txt variant="h3" color={colors.primaryDark} style={{ marginBottom: space.md }}>{t('track.howTitle')}</Txt>
+            {['received', 'review', 'resolved', 'escalated'].map(key => (
+              <View key={key} style={styles.howRow}>
+                <Ionicons name="checkmark-circle" size={18} color={colors.primary} />
+                <Txt variant="label" style={{ flex: 1, marginLeft: space.sm, fontWeight: '400' }}>{t(`track.how.${key}`)}</Txt>
+              </View>
+            ))}
+            <Txt variant="caption" color={colors.textSecondary} style={{ marginTop: space.sm }}>{t('track.anonymousNote')}</Txt>
+          </Card>
         </View>
-
-        {/* Complaint Result */}
-        {activeComplaint && (
-          <View style={styles.card}>
-            <View style={styles.timelineHeader}>
-              <Text style={styles.ticketNum}>{activeComplaint.ticket_number || ticketInput}</Text>
-              {activeComplaint.facility && (
-                <Text style={styles.facilityName}>
-                  {activeComplaint.facility?.name || activeComplaint.facility}
-                </Text>
-              )}
-              {activeComplaint.visit_date && (
-                <Text style={styles.submittedDate}>
-                  Visit date: {new Date(activeComplaint.visit_date).toLocaleDateString()}
-                </Text>
-              )}
-            </View>
-
-            <View style={styles.statusRow}>
-              <Text style={styles.statusLabel}>Status</Text>
-              {(() => {
-                const s = getStatusStyle(activeComplaint.status);
-                return (
-                  <View style={[styles.statusBadge, { backgroundColor: s.bg, borderColor: s.border }]}>
-                    <Text style={[styles.statusBadgeText, { color: s.text }]}>
-                      {getStatusLabel(activeComplaint.status || 'SUBMITTED')}
-                    </Text>
-                  </View>
-                );
-              })()}
-            </View>
-
-            {activeComplaint.comment && (
-              <View style={styles.commentBox}>
-                <Text style={styles.commentLabel}>Your feedback</Text>
-                <Text style={styles.commentText}>{activeComplaint.comment}</Text>
-              </View>
-            )}
-
-            {activeComplaint.resolution_summary && (
-              <View style={styles.resolutionBox}>
-                <Text style={styles.resolutionLabel}>Action Taken:</Text>
-                <Text style={styles.resolutionText}>{activeComplaint.resolution_summary}</Text>
-              </View>
-            )}
-
-            {activeComplaint.status === 'RESOLVED' && (
-              <View style={styles.rateSection}>
-                <Text style={styles.rateQuestion}>Was this resolution satisfactory?</Text>
-                <View style={styles.rateButtons}>
-                  <TouchableOpacity style={styles.rateBtn}>
-                    <Text style={styles.rateBtnText}>Yes</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.rateBtn, styles.rateBtnNo]}>
-                    <Text style={styles.rateBtnText}>No</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* Info Card */}
-        <View style={[styles.card, styles.infoCard]}>
-          <Text style={styles.infoTitle}>How Tracking Works</Text>
-          <View style={styles.infoList}>
-            <View style={styles.infoItem}>
-              <Ionicons name="checkmark-circle" size={16} color={colors.primary.teal} />
-              <Text style={styles.infoText}>Anonymous feedback is reviewed weekly</Text>
-            </View>
-            <View style={styles.infoItem}>
-              <Ionicons name="checkmark-circle" size={16} color={colors.primary.teal} />
-              <Text style={styles.infoText}>Ticketed complaints are escalated to facility supervisors</Text>
-            </View>
-            <View style={styles.infoItem}>
-              <Ionicons name="checkmark-circle" size={16} color={colors.primary.teal} />
-              <Text style={styles.infoText}>You'll be notified when the status changes</Text>
-            </View>
-          </View>
-        </View>
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    backgroundColor: colors.primary.dark,
-    paddingTop: 50,
-    paddingBottom: 16,
-    paddingHorizontal: 16,
-  },
-  headerTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
-
-  content: { padding: 16, paddingBottom: 100 },
-
-  card: {
-    backgroundColor: colors.card,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: colors.gray[100],
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  cardTitle: { fontSize: 18, fontWeight: 'bold', color: colors.primary.dark, marginBottom: 12 },
-
-  inputBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.gray[50],
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.gray[200],
-  },
-  inputIcon: { marginRight: 12 },
-  ticketInput: {
-    flex: 1,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: colors.text,
-    fontFamily: 'monospace',
-  },
-
-  trackBtn: {
-    backgroundColor: colors.primary.teal,
-    padding: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  trackBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 15 },
-
-  timelineHeader: { marginBottom: 16 },
-  ticketNum: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: colors.primary.teal,
-    fontFamily: 'monospace',
-    marginBottom: 4,
-  },
-  facilityName: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
-  submittedDate: { fontSize: 13, color: colors.neutral },
-
-  statusRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  statusLabel: { fontSize: 14, color: colors.neutral, fontWeight: '600' },
-  statusBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
-    borderWidth: 1,
-  },
-  statusBadgeText: { fontSize: 13, fontWeight: '600' },
-
-  commentBox: {
-    backgroundColor: colors.gray[50],
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  commentLabel: { fontSize: 12, fontWeight: '600', color: colors.neutral, marginBottom: 4 },
-  commentText: { fontSize: 14, color: colors.text },
-
-  resolutionBox: {
-    backgroundColor: '#DCFCE7',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 12,
-    borderLeftWidth: 3,
-    borderLeftColor: colors.success,
-  },
-  resolutionLabel: { fontSize: 12, fontWeight: '600', color: colors.success, marginBottom: 4 },
-  resolutionText: { fontSize: 13, color: colors.text },
-
-  rateSection: {
-    backgroundColor: colors.gray[50],
-    padding: 16,
-    borderRadius: 12,
-    marginTop: 8,
-  },
-  rateQuestion: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 12 },
-  rateButtons: { flexDirection: 'row', gap: 12 },
-  rateBtn: {
-    flex: 1,
-    padding: 12,
-    borderRadius: 8,
-    backgroundColor: colors.primary.teal,
-    alignItems: 'center',
-  },
-  rateBtnNo: { backgroundColor: colors.gray[200] },
-  rateBtnText: { color: '#fff', fontWeight: '600' },
-
-  infoCard: { backgroundColor: colors.primary.light, borderColor: colors.primary.teal },
-  infoTitle: { fontSize: 16, fontWeight: 'bold', color: colors.primary.dark, marginBottom: 12 },
-  infoList: { gap: 8 },
-  infoItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  infoText: { fontSize: 14, color: colors.text, flex: 1 },
+  body: { padding: space.lg },
+  ticketRow: { flexDirection: 'row', alignItems: 'center', marginBottom: space.md, minHeight: touch.large },
+  mono: { fontWeight: '800', letterSpacing: 0.5, color: colors.primaryDark },
+  pill: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.sm, paddingVertical: 4, borderRadius: radius.pill },
+  newDot: { marginLeft: space.sm, backgroundColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 1 },
+  howCard: { marginTop: space.xl, backgroundColor: colors.primaryLight },
+  howRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: space.sm },
 });
