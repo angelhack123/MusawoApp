@@ -48,10 +48,17 @@ export default function DoctorSearchScreen({ navigation, route }) {
   const debounce = useRef(null);
   const requestId = useRef(0);
 
-  useEffect(() => {
-    ReferenceAPI.specialties().then(r => setSpecialties(r.data)).catch(() => {});
-    ReferenceAPI.districts().then(r => setDistricts(r.data)).catch(() => {});
-  }, []);
+  const loadSpecialties = () => ReferenceAPI.specialties().then(r => setSpecialties(r.data)).catch(() => {});
+  const loadDistricts = () => ReferenceAPI.districts().then(r => setDistricts(r.data)).catch(() => {});
+
+  useEffect(() => { loadSpecialties(); loadDistricts(); }, []);
+
+  // Retry when a picker opens empty (first load failed offline, or ran before reference data existed)
+  const openSheet = (name) => {
+    if (name === 'specialty' && !specialties.length) loadSpecialties();
+    if (name === 'district' && !districts.length) loadDistricts();
+    setSheet(name);
+  };
 
   useFocusEffect(useCallback(() => { storage.getSearchHistory().then(setHistory); }, []));
 
@@ -180,8 +187,8 @@ export default function DoctorSearchScreen({ navigation, route }) {
       </View>
       {showFilters && (
         <View style={styles.filterPanel}>
-          <FilterSelect icon="school" label={t('filters.specialty')} value={specialty?.name || t('filters.allSpecialties')} onPress={() => setSheet('specialty')} />
-          <FilterSelect icon="location" label={t('filters.district')} value={district?.name || t('filters.allDistricts')} onPress={() => setSheet('district')} />
+          <FilterSelect icon="school" label={t('filters.specialty')} value={specialty?.name || t('filters.allSpecialties')} onPress={() => openSheet('specialty')} />
+          <FilterSelect icon="location" label={t('filters.district')} value={district?.name || t('filters.allDistricts')} onPress={() => openSheet('district')} />
           <View style={styles.switchRow}>
             <Ionicons name="checkmark-circle" size={20} color={colors.success} />
             <Txt variant="body" style={{ flex: 1, marginLeft: space.sm }}>{t('filters.activeOnly')}</Txt>

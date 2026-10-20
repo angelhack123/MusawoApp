@@ -11,13 +11,16 @@ const page = (res) => ({
   count: res.data.count ?? (res.data.length || 0),
 });
 
+// An empty list is never cached, or a fetch made before data was loaded would stick for the whole maxAge
+const isEmpty = (data) => Array.isArray(data) && data.length === 0;
+
 // Serve from cache when offline; `fromCache` lets screens show an offline banner
 const withCache = async (key, maxAgeMs, fetcher) => {
   const cached = await storage.cacheGet(key, maxAgeMs);
-  if (cached) return { data: cached.data, fromCache: false };
+  if (cached && !isEmpty(cached.data)) return { data: cached.data, fromCache: false };
   try {
     const data = await fetcher();
-    storage.cacheSet(key, data);
+    if (!isEmpty(data)) storage.cacheSet(key, data);
     return { data, fromCache: false };
   } catch (err) {
     const stale = err.offline && (await storage.cacheGet(key));
