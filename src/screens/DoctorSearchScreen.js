@@ -16,11 +16,9 @@ import { SelectSheet } from '../components/Sheet';
 import { DoctorCard } from '../components/Cards';
 import { Banner, Button, Chip, Txt } from '../components/ui';
 
-// "12345" -> "MDC/12345"; keeps an existing prefix (US-1.2 auto-format)
-const formatReg = (raw) => {
-  const clean = raw.trim().toUpperCase().replace(/\s+/g, '');
-  return /^\d+$/.test(clean) ? `MDC/${clean}` : clean;
-};
+// Normalise only; the backend tries the number as typed, with and without "MDC/".
+// Real register numbers are "K1234" (UMDPC) or "132"/"12345" (AHPC), so no prefix is added.
+const formatReg = (raw) => raw.trim().toUpperCase().replace(/\s+/g, '');
 
 export default function DoctorSearchScreen({ navigation, route }) {
   const { t, settings } = useAppState();
@@ -162,9 +160,6 @@ export default function DoctorSearchScreen({ navigation, route }) {
         error={regError}
         style={{ marginTop: space.md }}
       />
-      {mode === 'reg' && /^\d{4,6}$/.test(query.trim()) ? (
-        <Txt variant="caption" color={colors.primaryMuted} style={{ marginTop: 6 }}>{t('verify.willSearch', { reg: formatReg(query) })}</Txt>
-      ) : null}
     </AppBar>
   );
 

@@ -9,7 +9,8 @@ export const PAGE_SIZE = 10;
 export const FEEDBACK_WINDOW_DAYS = 30;
 export const COMMENT_MAX = 500;
 export const TICKET_RE = /^MSW-\d{4}-\d{6}$/;
-export const REG_NUMBER_RE = /^(MDC\/)?\d{4,6}$/i;
+// UMDPC "K1234"/"L12345", AHPC "132"/"12345", or the "MDC/12345" form
+export const REG_NUMBER_RE = /^(MDC\/)?[A-Z]?\d{3,6}$/i;
 
 // TODO(GHE): fill in before release; the Contact screen shows whatever is set here
 export const SUPPORT_CONTACT = {
