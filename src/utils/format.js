@@ -40,3 +40,20 @@ export const initials = (name = '') =>
   name.replace(/^(dr|prof)\.?\s+/i, '').split(/\s+/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join('');
 
 export const withTitle = (name = '') => (/^(dr|prof)\.?\s/i.test(name) ? name : `Dr. ${name}`);
+
+// "09:30" in the phone's local time
+export const formatTime = (value) => {
+  const d = value instanceof Date ? value : new Date(value);
+  return isNaN(d) ? '' : `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+// "Tue, 4 Nov · 09:30"
+export const formatSlot = (value) => {
+  const d = value instanceof Date ? value : new Date(value);
+  if (isNaN(d)) return '';
+  return `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })} · ${formatTime(d)}`;
+};
+
+// 50000 -> "UGX 50,000"
+export const formatUGX = (amount) =>
+  amount == null ? null : `UGX ${String(Math.round(amount)).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;

@@ -1,7 +1,7 @@
 // Root stack (detail screens) + bottom tabs with a raised centre "Feedback" action.
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
-import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
+import { DefaultTheme, NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,6 +9,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, shadow } from '../theme';
 import { useAppState } from '../state/AppState';
 import { Txt } from '../components/ui';
+import { useStaffSession } from '../state/StaffSession';
+import { Notifications } from '../utils/push';
 
 import SplashScreen from '../screens/SplashScreen';
 import OnboardingScreen from '../screens/OnboardingScreen';
@@ -25,6 +27,20 @@ import SettingsScreen from '../screens/SettingsScreen';
 import LanguageScreen from '../screens/LanguageScreen';
 import InfoPageScreen from '../screens/InfoPageScreen';
 import PatientRightsScreen from '../screens/PatientRightsScreen';
+import BookSearchScreen from '../screens/BookSearchScreen';
+import BookDoctorScreen from '../screens/BookDoctorScreen';
+import BookDetailsScreen from '../screens/BookDetailsScreen';
+import BookingDoneScreen from '../screens/BookingDoneScreen';
+import MyBookingsScreen from '../screens/MyBookingsScreen';
+import StaffAuthScreen from '../screens/StaffAuthScreen';
+import StaffHomeScreen from '../screens/StaffHomeScreen';
+import DoctorBookingScreen from '../screens/DoctorBookingScreen';
+import AvailabilityScreen from '../screens/AvailabilityScreen';
+import NotificationsScreen from '../screens/NotificationsScreen';
+import OwnerFacilityScreen from '../screens/OwnerFacilityScreen';
+import OwnerFacilityFormScreen from '../screens/OwnerFacilityFormScreen';
+
+export const navigationRef = createNavigationContainerRef();
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -32,8 +48,8 @@ const Tab = createBottomTabNavigator();
 const TAB_ICONS = {
   Home: 'home',
   Verify: 'shield-checkmark',
+  Book: 'calendar',
   Track: 'receipt',
-  Facilities: 'business',
 };
 
 const navTheme = { ...DefaultTheme, colors: { ...DefaultTheme.colors, background: colors.bg, primary: colors.primary } };
@@ -79,15 +95,32 @@ function Tabs() {
           tabPress: (e) => { e.preventDefault(); navigation.navigate('Feedback'); },
         })}
       />
+      <Tab.Screen name="Book" component={BookSearchScreen} options={{ title: t('tabs.book') }} />
       <Tab.Screen name="Track" component={TrackScreen} options={{ title: t('tabs.track') }} />
-      <Tab.Screen name="Facilities" component={FacilitiesScreen} options={{ title: t('tabs.facilities') }} />
     </Tab.Navigator>
   );
 }
 
 export default function AppNavigator() {
   const { ready, settings } = useAppState();
+  const staff = useStaffSession();
   const [splashDone, setSplashDone] = useState(false);
+  const pendingOpen = useRef(null);
+
+  // Tapping a booking push opens that booking (also when it launched the app)
+  useEffect(() => {
+    const open = (response) => {
+      const bookingId = response?.notification?.request?.content?.data?.booking_id;
+      if (!bookingId) return;
+      if (navigationRef.isReady()) navigationRef.navigate('DoctorBooking', { id: bookingId });
+      else pendingOpen.current = bookingId;
+    };
+    Notifications.getLastNotificationResponseAsync?.().then(open).catch(() => {});
+    const tapped = Notifications.addNotificationResponseReceivedListener(open);
+    // A push while the app is open: refresh the unread badge
+    const received = Notifications.addNotificationReceivedListener(() => staff.refresh());
+    return () => { tapped.remove(); received.remove(); };
+  }, [staff.refresh]);
 
   // Brief brand moment; never longer than the 2s the spec allows
   useEffect(() => {
@@ -95,10 +128,17 @@ export default function AppNavigator() {
     return () => clearTimeout(timer);
   }, []);
 
-  if (!ready || !splashDone) return <SplashScreen />;
+  if (!ready || !splashDone || staff.loading) return <SplashScreen />;
 
   return (
-    <NavigationContainer theme={navTheme}>
+    <NavigationContainer
+      ref={navigationRef}
+      theme={navTheme}
+      onReady={() => {
+        if (pendingOpen.current) navigationRef.navigate('DoctorBooking', { id: pendingOpen.current });
+        pendingOpen.current = null;
+      }}
+    >
       <Stack.Navigator screenOptions={{ headerShown: false, animation: 'slide_from_right', contentStyle: { backgroundColor: colors.bg } }}>
         {!settings.onboarded ? (
           <Stack.Screen name="Onboarding" component={OnboardingScreen} options={{ animation: 'fade' }} />
@@ -114,6 +154,18 @@ export default function AppNavigator() {
             <Stack.Screen name="Language" component={LanguageScreen} />
             <Stack.Screen name="InfoPage" component={InfoPageScreen} />
             <Stack.Screen name="PatientRights" component={PatientRightsScreen} />
+            <Stack.Screen name="Facilities" component={FacilitiesScreen} />
+            <Stack.Screen name="BookDoctor" component={BookDoctorScreen} />
+            <Stack.Screen name="BookDetails" component={BookDetailsScreen} />
+            <Stack.Screen name="BookingDone" component={BookingDoneScreen} options={{ animation: 'fade', gestureEnabled: false }} />
+            <Stack.Screen name="MyBookings" component={MyBookingsScreen} />
+            <Stack.Screen name="StaffAuth" component={StaffAuthScreen} />
+            <Stack.Screen name="StaffHome" component={StaffHomeScreen} />
+            <Stack.Screen name="DoctorBooking" component={DoctorBookingScreen} />
+            <Stack.Screen name="Availability" component={AvailabilityScreen} />
+            <Stack.Screen name="Notifications" component={NotificationsScreen} />
+            <Stack.Screen name="OwnerFacility" component={OwnerFacilityScreen} />
+            <Stack.Screen name="OwnerFacilityForm" component={OwnerFacilityFormScreen} />
           </>
         )}
       </Stack.Navigator>

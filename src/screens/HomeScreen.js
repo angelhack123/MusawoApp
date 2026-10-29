@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, space } from '../theme';
 import { useAppState } from '../state/AppState';
+import { useStaffSession } from '../state/StaffSession';
 import { storage } from '../utils/storage';
 import { flushFeedbackQueue, syncMyTickets } from '../api/musawo';
 import { Decor } from '../components/AppBar';
@@ -38,6 +39,7 @@ function Tile({ icon, label, onPress, color, bg, badge }) {
 
 export default function HomeScreen({ navigation }) {
   const { t, settings } = useAppState();
+  const staff = useStaffSession();
   const insets = useSafeAreaInsets();
   const [recent, setRecent] = useState([]);
   const [updated, setUpdated] = useState([]);
@@ -96,6 +98,14 @@ export default function HomeScreen({ navigation }) {
           subtitle={t('home.feedbackSubtitle')}
           onPress={() => navigation.navigate('Feedback')}
         />
+        <ActionCard
+          icon="calendar"
+          iconBg={colors.infoBg}
+          accent={colors.info}
+          title={t('home.bookTitle')}
+          subtitle={t('home.bookSubtitle')}
+          onPress={() => navigation.navigate('Book')}
+        />
 
         {updated.length > 0 && (
           <Banner
@@ -149,6 +159,21 @@ export default function HomeScreen({ navigation }) {
           <Ionicons name="hand-left" size={56} color="rgba(255,255,255,0.18)" />
         </Card>
 
+        <Card onPress={() => navigation.navigate(staff.signedIn ? 'StaffHome' : 'StaffAuth')} style={styles.staffCard}>
+          <IconCircle icon={staff.signedIn ? 'briefcase' : 'medkit'} size={44} />
+          <View style={{ flex: 1, marginHorizontal: space.md }}>
+            <Txt variant="body" style={{ fontWeight: '700' }}>
+              {staff.signedIn ? t('home.workspace') : t('home.healthWorker')}
+            </Txt>
+            <Txt variant="caption" color={colors.textSecondary}>
+              {staff.signedIn
+                ? `${staff.profile.full_name}${staff.profile.unread_notifications ? ` · ${t('home.unread', { count: staff.profile.unread_notifications })}` : ''}`
+                : t('home.healthWorkerHint')}
+            </Txt>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={colors.placeholder} />
+        </Card>
+
         {settings.lang === 'lg' && (
           <Banner tone="info" icon="language" text={t('settings.luganda.pending')} style={styles.banner} />
         )}
@@ -187,5 +212,6 @@ const styles = StyleSheet.create({
   },
   tileLabel: { marginTop: space.sm, textAlign: 'center', fontWeight: '600' },
   tileBadge: { position: 'absolute', top: 8, right: 8, minWidth: 22, height: 22, borderRadius: 11, backgroundColor: colors.amber, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  staffCard: { flexDirection: 'row', alignItems: 'center', marginBottom: space.lg, borderWidth: 1, borderColor: colors.border },
   rightsCard: { marginTop: space.xl, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', borderRadius: radius.lg, marginBottom: space.lg },
 });

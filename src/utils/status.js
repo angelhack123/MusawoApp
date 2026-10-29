@@ -35,3 +35,13 @@ export const FACILITY_TYPES = [
 
 export const facilityIcon = (type) =>
   (FACILITY_GROUPS.find(g => g.types.includes(type)) || FACILITY_GROUPS[0]).icon;
+
+export const BOOKING_STATUS = {
+  REQUESTED: { key: 'requested', icon: 'hourglass', color: colors.warningText, bg: colors.warningBg },
+  ACCEPTED: { key: 'accepted', icon: 'checkmark-circle', color: colors.successText, bg: colors.successBg },
+  DECLINED: { key: 'declined', icon: 'close-circle', color: colors.dangerText, bg: colors.dangerBg },
+  CANCELLED: { key: 'cancelled', icon: 'remove-circle', color: colors.neutralText, bg: colors.neutralBg },
+  COMPLETED: { key: 'completed', icon: 'checkmark-done-circle', color: colors.primaryDark, bg: colors.primaryLight },
+};
+
+export const bookingStatus = (status) => BOOKING_STATUS[status] || BOOKING_STATUS.REQUESTED;

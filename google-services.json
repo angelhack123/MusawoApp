@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "341848200795",
+    "project_id": "musawo-5e036",
+    "storage_bucket": "musawo-5e036.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:341848200795:android:fa6593d08698bfcdeb917e",
+        "android_client_info": {
+          "package_name": "ug.musawo.mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDpIJPWj55oDGFw-n8-oWK4SCicVG-QLAA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

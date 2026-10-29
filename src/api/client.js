@@ -25,11 +25,16 @@ export const getDeviceHash = async () => {
   return deviceHash;
 };
 
+// Staff (doctor / facility-owner) login token; null for patients
+let authToken = null;
+export const setAuthToken = (token) => { authToken = token; };
+
 api.interceptors.request.use(async (config) => {
   try {
     const hash = await getDeviceHash();
     config.headers['X-Device-Token'] = hash;
   } catch {}
+  if (authToken) config.headers.Authorization = `Token ${authToken}`;
   return config;
 });
 

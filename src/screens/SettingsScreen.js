@@ -4,6 +4,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-na
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, space, touch } from '../theme';
 import { useAppState } from '../state/AppState';
+import { useStaffSession } from '../state/StaffSession';
 import { ReferenceAPI } from '../api/musawo';
 import { storage } from '../utils/storage';
 import { APP_VERSION } from '../config';
@@ -42,6 +43,7 @@ function Group({ title, children }) {
 
 export default function SettingsScreen({ navigation }) {
   const { t, settings, updateSettings, resetSettings } = useAppState();
+  const staff = useStaffSession();
   const [districts, setDistricts] = useState([]);
   const [sheet, setSheet] = useState(false);
 
@@ -82,6 +84,12 @@ export default function SettingsScreen({ navigation }) {
             right={<Switch value={settings.pushNotif} onValueChange={toggle('pushNotif')} {...switchProps} accessibilityLabel={t('settings.push')} />} />
           <Row icon="chatbox" label={t('settings.sms')} sub={t('settings.smsSub')} last
             right={<Switch value={settings.smsNotif} onValueChange={toggle('smsNotif')} {...switchProps} accessibilityLabel={t('settings.sms')} />} />
+        </Group>
+
+        <Group title={t('settings.healthWorkers')}>
+          <Row icon="medkit" label={staff.signedIn ? t('home.workspace') : t('staff.title')}
+            sub={staff.signedIn ? staff.profile.email : t('home.healthWorkerHint')}
+            onPress={() => navigation.navigate(staff.signedIn ? 'StaffHome' : 'StaffAuth')} last />
         </Group>
 
         <Group title={t('settings.learn')}>

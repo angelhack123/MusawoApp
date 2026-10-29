@@ -84,6 +84,7 @@ export default function FacilitiesScreen({ navigation }) {
             <AppBar
               title={t('facilities.title')}
               subtitle={t('facilities.subtitle')}
+              onBack={navigation.canGoBack() ? () => navigation.goBack() : undefined}
               right={<IconButton icon={compareMode ? 'close' : 'git-compare'} onPress={compareMode ? exitCompare : () => setCompareMode(true)} label={t('facilities.compare')} />}
             >
               <SearchInput value={query} onChangeText={setQuery} placeholder={t('facilities.searchPlaceholder')} style={{ marginTop: space.md }} />

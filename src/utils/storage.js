@@ -12,6 +12,7 @@ const KEYS = {
   FEEDBACK_QUEUE: 'm_feedback_queue',
   MY_TICKETS: 'm_my_tickets',
   TRACKED_TICKETS: 'm_tracked_tickets',
+  PATIENT_CONTACT: 'm_patient_contact',
   DEVICE_ID: 'device_id',
 };
 
@@ -152,6 +153,14 @@ export const storage = {
     const updated = [{ ...entry, at: Date.now() }, ...list.filter(t => t.ticket_number !== entry.ticket_number)].slice(0, 10);
     await write(KEYS.TRACKED_TICKETS, updated);
     return updated;
+  },
+
+  // Name + phone remembered on this phone to pre-fill the next booking
+  async getPatientContact() {
+    return read(KEYS.PATIENT_CONTACT, null);
+  },
+  async savePatientContact(contact) {
+    await write(KEYS.PATIENT_CONTACT, contact);
   },
 
   async clearAll() {
